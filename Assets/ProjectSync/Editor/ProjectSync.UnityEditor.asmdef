@@ -1,0 +1,16 @@
+{
+  "name": "ProjectSync.UnityEditor",
+  "rootNamespace": "ProjectSync.UnityEditor",
+  "references": [],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

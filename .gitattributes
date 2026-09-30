@@ -1,0 +1,9 @@
+# ProjectSync Main Scene lock target. Do not broaden this to every Scene implicitly.
+Assets/Scenes/VRCDefaultWorldScene.unity filter=lfs diff=lfs merge=lfs -text lockable
+
+# Keep coordination and configuration documents reviewable as text.
+*.json text eol=lf
+*.md text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.xaml text eol=lf

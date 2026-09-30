@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "unityProjectPath": "C:/Users/19718/AppData/Local/VRChatProjects/projectsync",
+  "github": {
+    "owner": "fjnmgnkai",
+    "repository": "projectsynctest",
+    "mainBranch": "main",
+    "stateBranch": "projectsync-state",
+    "trustedServiceBaseUrl": ""
+  },
+  "lfs": {
+    "lockedScenePaths": [
+      "Assets/Scenes/VRCDefaultWorldScene.unity"
+    ]
+  },
+  "build": {
+    "platforms": [],
+    "worldId": ""
+  }
+}

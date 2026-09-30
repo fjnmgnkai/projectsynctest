@@ -1,0 +1,12 @@
+<Application x:Class="ProjectSync.Desktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Margin" Value="0,0,12,12" />
+            <Setter Property="Padding" Value="18,10" />
+            <Setter Property="MinWidth" Value="140" />
+        </Style>
+    </Application.Resources>
+</Application>
