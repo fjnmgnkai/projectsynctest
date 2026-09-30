@@ -1,0 +1,56 @@
+name: ProjectSync Required Check
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: projectsync-required-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  projectsync-gate:
+    name: ProjectSync Gate
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout fixed revision with LFS
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          lfs: true
+          persist-credentials: false
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Verify Main Scene is an LFS object
+        shell: pwsh
+        run: |
+          $tracked = git lfs ls-files --name-only
+          if ($tracked -notcontains 'Assets/Scenes/VRCDefaultWorldScene.unity') {
+            throw 'Main Scene is not tracked by Git LFS.'
+          }
+          git lfs fsck
+
+      - name: Build ProjectSync specification tests
+        shell: pwsh
+        run: dotnet build Tools/ProjectSync/tests/ProjectSync.SpecTests/ProjectSync.SpecTests.csproj --configuration Release --nologo
+
+      - name: Run ProjectSync specification tests
+        shell: pwsh
+        run: dotnet run --project Tools/ProjectSync/tests/ProjectSync.SpecTests/ProjectSync.SpecTests.csproj --configuration Release --no-build
+
+      - name: Build ProjectSync Windows desktop shell
+        shell: pwsh
+        run: dotnet build Tools/ProjectSync/src/ProjectSync.Desktop/ProjectSync.Desktop.csproj --configuration Release --nologo
