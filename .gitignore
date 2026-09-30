@@ -36,6 +36,7 @@
 ExportedObj/
 .consulo/
 *.csproj
+!/Tools/ProjectSync/**/*.csproj
 *.unityproj
 *.sln
 *.suo
