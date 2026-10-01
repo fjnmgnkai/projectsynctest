@@ -6,14 +6,6 @@ namespace ProjectSync.Infrastructure;
 
 public static class GitCommandPolicy
 {
-    private static readonly HashSet<string> ForceOptions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "--force",
-        "--force-with-lease",
-        "--force-if-includes",
-        "-f"
-    };
-
     public static Outcome<Unit> Validate(IReadOnlyList<string> arguments, OperationId operationId)
     {
         if (arguments.Count == 0)
@@ -22,27 +14,67 @@ public static class GitCommandPolicy
         }
 
         var command = arguments[0];
-        if (string.Equals(command, "stash", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(command, "reset", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(command, "clean", StringComparison.OrdinalIgnoreCase))
+        var allowed = command switch
         {
-            return Reject("git_destructive_command_forbidden", $"git {command} is forbidden by ProjectSync policy.", operationId);
-        }
+            "symbolic-ref" => Matches(arguments, "symbolic-ref", "--quiet", "--short", "HEAD"),
+            "status" => Matches(arguments, "status", "--porcelain=v1", "--untracked-files=all"),
+            "rev-parse" => Matches(arguments, "rev-parse", "--verify", "HEAD") ||
+                           Matches(arguments, "rev-parse", "--verify", "FETCH_HEAD"),
+            "log" => Matches(arguments, "log", "-1", "--format=%B"),
+            "add" => Matches(arguments, "add", "-A"),
+            "commit" => arguments.Count == 5 &&
+                        arguments[1] == "-m" &&
+                        !string.IsNullOrWhiteSpace(arguments[2]) &&
+                        arguments[3] == "-m" &&
+                        arguments[4] == $"ProjectSync-Operation-Id: {operationId.Value}",
+            "push" => arguments.Count == 4 &&
+                      arguments[1] == "--porcelain" &&
+                      arguments[2] == "origin" &&
+                      IsTaskRefspec(arguments[3], operationId),
+            "ls-remote" => arguments.Count == 5 &&
+                           arguments[1] == "--exit-code" &&
+                           arguments[2] == "--heads" &&
+                           arguments[3] == "origin" &&
+                           IsTaskRef(arguments[4], operationId),
+            "fetch" => arguments.Count == 4 &&
+                       arguments[1] == "--no-tags" &&
+                       arguments[2] == "origin" &&
+                       IsTaskRef(arguments[3], operationId),
+            "merge-base" => arguments.Count == 4 &&
+                            arguments[1] == "--is-ancestor" &&
+                            IsFullSha(arguments[2]) &&
+                            IsFullSha(arguments[3]),
+            _ => false
+        };
 
-        if (arguments.Any(arg => ForceOptions.Contains(arg)) ||
-            arguments.Any(arg => arg.StartsWith("--force=", StringComparison.OrdinalIgnoreCase)))
-        {
-            return Reject("git_force_forbidden", "Force operations are forbidden by ProjectSync policy.", operationId);
-        }
-
-        if (string.Equals(command, "push", StringComparison.OrdinalIgnoreCase) &&
-            arguments.Any(arg => string.Equals(arg, "--delete", StringComparison.OrdinalIgnoreCase)))
-        {
-            return Reject("git_remote_delete_forbidden", "Remote deletion is not available through the normal ProjectSync command path.", operationId);
-        }
-
-        return Outcome<Unit>.Success(Unit.Value);
+        return allowed
+            ? Outcome<Unit>.Success(Unit.Value)
+            : Reject("git_command_not_allowlisted", "This exact Git command is not available through ProjectSync.", operationId);
     }
+
+    public static bool IsFullSha(string? value) =>
+        value is { Length: 40 or 64 } && value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
+
+    private static bool Matches(IReadOnlyList<string> arguments, params string[] expected) =>
+        arguments.Count == expected.Length &&
+        arguments.Zip(expected).All(pair => string.Equals(pair.First, pair.Second, StringComparison.Ordinal));
+
+    private static bool IsTaskRefspec(string refspec, OperationId operationId)
+    {
+        var separator = refspec.IndexOf(':');
+        return separator > 0 &&
+               separator == refspec.LastIndexOf(':') &&
+               IsFullSha(refspec[..separator]) &&
+               IsTaskRef(refspec[(separator + 1)..], operationId);
+    }
+
+    private static bool IsTaskRef(string reference, OperationId operationId) =>
+        reference.StartsWith("refs/heads/", StringComparison.Ordinal) &&
+        TaskBranchPolicy.RequireTaskBranch(
+            reference["refs/heads/".Length..],
+            operationId,
+            "git_policy").IsSuccess;
 
     private static Outcome<Unit> Reject(string code, string message, OperationId operationId) =>
         Outcome<Unit>.Failure(Problem.Create(
@@ -56,7 +88,7 @@ public static class GitCommandPolicy
 
 public sealed record GitCommandResult(int ExitCode, string StandardOutput, string StandardError);
 
-public sealed class SafeGitProcessRunner
+internal sealed class SafeGitProcessRunner
 {
     public async Task<Outcome<GitCommandResult>> RunAsync(
         string workingDirectory,
@@ -83,6 +115,8 @@ public sealed class SafeGitProcessRunner
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+        startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        startInfo.Environment["GCM_INTERACTIVE"] = "Never";
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);

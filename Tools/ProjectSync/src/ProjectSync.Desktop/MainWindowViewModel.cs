@@ -81,7 +81,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             "External writes: disabled",
             "",
             "ProjectSyncは未設定状態で安全停止しています。",
-            "GitHub owner/repository、Ruleset、LFS対象、Service URLが確定するまで",
+            "Private + GitHub Free: main保護はGitHub側で強制できません。",
+            "信頼済み協調サービスと復旧検証が接続されるまで、",
             "新しい作業・保存・提出は実行されません。");
     }
 

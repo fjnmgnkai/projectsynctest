@@ -13,15 +13,19 @@ ProjectSync is a Windows front end for the Git, Git LFS, GitHub, and Unity workf
 - Submitted/Base/Candidate/conflict/generation validation identity
 - Fixed `BuildTargetSHA`, distinct Upload outcome, and `auto_merge=false` deployment contract
 - Git process policy rejecting reset, stash, clean, force push, and normal-path remote deletion
+- Task-only Git CLI adapter with full-SHA, non-force push and remote reachability verification
+- Start/save branch guards that reject `main` and mismatched Task branches before external effects
 - Unity 2022.3 Editor bridge for main-thread Scene and Asset save
-- WPF shell that remains safely disabled while GitHub/LFS/service configuration is absent
+- WPF shell that remains safely disabled until trusted coordination and production gateways are connected
 - Self-contained failure/concurrency specification tests without external packages
 
 ## Safety boundary
 
-This slice does not initialize Git, create or mutate a GitHub repository, acquire a real LFS lock, merge, build, upload, publish, or create a Deployment. Those paths require the repository owner, Ruleset authority, trusted GitHub App service location, locked Scene paths, required checks, and VRChat upload evidence contract.
+The repository is connected to the private `fjnmgnkai/projectsynctest` GitHub repository, and the Main Scene LFS lock conflict was proven in an isolated PoC. The new Git adapter is exercised only against temporary local repositories; it is not wired to the desktop actions. Production Task start/save/submit, merge, build, upload, publish, and Deployment remain disabled pending trusted coordination, Unity and GitHub integration, and recovery verification.
 
-The desktop shell intentionally reports a safe-stop state while those values are absent. GitHub App private keys must never be placed in this project or distributed to clients.
+GitHub Free cannot enforce Branch Protection or Rulesets on this private repository. The owner accepted a limited, trust-based pilot in which they manage merges; ProjectSync must never present that as satisfying the canonical GitHub-side Quality Gate. See `CodexTasks/projectsync-v1.1/PRIVATE_FREE_PILOT_EXCEPTION.md`. The repository will remain private.
+
+The desktop shell intentionally reports a safe-stop state while the trusted service and verification paths are absent. GitHub App private keys must never be placed in this project or distributed to clients.
 
 ## Build and test
 

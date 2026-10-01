@@ -1,5 +1,7 @@
 # ProjectSync v1.1 Implementation Design Proposal
 
+> Historical pre-implementation proposal. For current code, test, and pilot status, see `IMPLEMENTATION_STATUS.md` and `PRIVATE_FREE_PILOT_EXCEPTION.md`. Statements below about an uninitialized repository or production code not yet existing describe the earlier design phase.
+
 ## Status
 
 `REDIRECT TO RISK FIRST POC — PRODUCTION UNCHANGED`

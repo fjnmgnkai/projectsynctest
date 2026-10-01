@@ -39,6 +39,12 @@ public sealed class StartSceneTaskWorkflow
         StartSceneTaskRequest request,
         CancellationToken cancellationToken = default)
     {
+        var branch = TaskBranchPolicy.RequireTaskBranch(request.TaskBranch, request.OperationId, "start_preflight");
+        if (!branch.IsSuccess)
+        {
+            return Outcome<StartSceneTaskResult>.Failure(branch.Problem!);
+        }
+
         var checkpoint = await _journal.LoadOrCreateAsync(
             OperationCheckpoint.Create(request.OperationId, Kind, request.TaskId),
             cancellationToken).ConfigureAwait(false);

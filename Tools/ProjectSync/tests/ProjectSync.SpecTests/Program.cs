@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using ProjectSync.Core;
 using ProjectSync.Infrastructure;
 
@@ -16,6 +17,10 @@ internal static class Program
         ("build target SHA never follows later main", BuildTargetShaIsFixedAsync),
         ("deployment projection forces auto_merge false", DeploymentProjectionDisablesAutoMergeAsync),
         ("forbidden Git operations are rejected before process spawn", GitPolicyRejectsForbiddenCommandsAsync),
+        ("invalid Task branch is rejected before external start effects", InvalidStartBranchHasNoEffectsAsync),
+        ("save refuses a branch that differs from coordination state", SaveBranchMismatchHasNoEffectsAsync),
+        ("save branch binding survives journal reload", SaveBranchBindingSurvivesReloadAsync),
+        ("real Git Task snapshot and push leave main unchanged", GitCliTaskGatewayKeepsMainReadOnlyAsync),
         ("operation journal survives process-memory loss", FileJournalPersistsAsync)
     ];
 
@@ -110,6 +115,12 @@ internal static class Program
         Equal(1, unity.SaveCalls, "Unity save must complete once.");
         Equal(1, git.CommitCalls, "Snapshot commit must remain after push failure.");
 
+        var wrongBranchRetry = await workflow.ExecuteAsync(
+            request with { TaskBranch = "task/other" }).ConfigureAwait(false);
+        False(wrongBranchRetry.IsSuccess, "The operation ID must not be rebound to another Task branch.");
+        Equal("operation_branch_reused", wrongBranchRetry.Problem!.ErrorCode, "The journal must bind the branch identity.");
+        Equal(1, git.CommitCalls, "Rejected retry must not create another commit.");
+
         git.FailPush = false;
         git.RemoteReachable = true;
         var retry = await workflow.ExecuteAsync(request).ConfigureAwait(false);
@@ -199,12 +210,215 @@ internal static class Program
     private static Task GitPolicyRejectsForbiddenCommandsAsync()
     {
         var operationId = new OperationId("git-policy");
+        var sha = new string('a', 40);
         False(GitCommandPolicy.Validate(["reset", "--hard", "HEAD"], operationId).IsSuccess, "reset must be rejected.");
         False(GitCommandPolicy.Validate(["stash", "push"], operationId).IsSuccess, "stash must be rejected.");
         False(GitCommandPolicy.Validate(["push", "--force", "origin", "task"], operationId).IsSuccess, "force push must be rejected.");
         False(GitCommandPolicy.Validate(["clean", "-fd"], operationId).IsSuccess, "automatic deletion must be rejected.");
-        True(GitCommandPolicy.Validate(["push", "origin", "task/task-1"], operationId).IsSuccess, "Normal Task push should pass policy.");
+        False(GitCommandPolicy.Validate(["push", "--porcelain", "origin", $"{sha}:refs/heads/main"], operationId).IsSuccess, "main push must be rejected.");
+        False(GitCommandPolicy.Validate(["push", "--mirror", "origin"], operationId).IsSuccess, "mirror push must be rejected.");
+        False(GitCommandPolicy.Validate(["-c", "alias.push=...", "push"], operationId).IsSuccess, "Git global options must not bypass the command allowlist.");
+        False(GitCommandPolicy.Validate(["branch", "-D", "task/task-1"], operationId).IsSuccess, "local branch deletion must not use this command path.");
+        True(GitCommandPolicy.Validate(["push", "--porcelain", "origin", $"{sha}:refs/heads/task/task-1"], operationId).IsSuccess, "Exact Task ref push should pass policy.");
+        False(TaskBranchPolicy.RequireTaskBranch("main", operationId, "test").IsSuccess, "main is not a Task branch.");
+        False(TaskBranchPolicy.RequireTaskBranch("task/../main", operationId, "test").IsSuccess, "Path-like traversal is not a Task branch.");
+        False(TaskBranchPolicy.RequireTaskBranch("task/a.lock", operationId, "test").IsSuccess, "Git special ref suffixes are not accepted.");
         return Task.CompletedTask;
+    }
+
+    private static async Task InvalidStartBranchHasNoEffectsAsync()
+    {
+        var fixture = new StartFixture();
+        var request = fixture.CreateRequest("device-a", "session-a", "invalid-start") with { TaskBranch = "main" };
+        var result = await fixture.Workflow.ExecuteAsync(request).ConfigureAwait(false);
+        False(result.IsSuccess, "A Scene Task must not use main as its Task branch.");
+        Equal("task_branch_invalid", result.Problem!.ErrorCode, "The branch guard must be explicit.");
+        Equal(0, fixture.Issues.UniqueIssueCount, "No Issue should be created.");
+        Equal(0, fixture.Locks.LockCount, "No LFS lock should be acquired.");
+        True((await fixture.State.ReadAsync(request.TaskId, default).ConfigureAwait(false)).Value is null,
+            "No coordination state should be claimed.");
+    }
+
+    private static async Task SaveBranchMismatchHasNoEffectsAsync()
+    {
+        var state = new InMemoryCoordinationStateStore();
+        var active = CreateActiveAggregate("task-save", "lock-save", "Assets/Scenes/Main.unity");
+        await SeedAsync(state, active).ConfigureAwait(false);
+        var unity = new FakeUnitySaveGateway();
+        var git = new FakeGitTaskGateway();
+        var workflow = new SaveTaskWorkflow(state, new InMemoryOperationJournal(), unity, git);
+        var request = new SaveTaskRequest(
+            active.TaskId,
+            "task/another-task",
+            AuthorityFor(active),
+            "snapshot",
+            new OperationId("wrong-branch"));
+
+        var result = await workflow.ExecuteAsync(request).ConfigureAwait(false);
+        False(result.IsSuccess, "A valid-looking but different branch must be rejected.");
+        Equal("task_branch_mismatch", result.Problem!.ErrorCode, "Coordination state must own the Task branch identity.");
+        Equal(0, unity.SaveCalls, "Unity save must not start when branch identity is wrong.");
+        Equal(0, git.CommitCalls, "Git commit must not start when branch identity is wrong.");
+        Equal(0, git.PushCalls, "Git push must not start when branch identity is wrong.");
+    }
+
+    private static async Task SaveBranchBindingSurvivesReloadAsync()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "projectsync-tests", Guid.NewGuid().ToString("N"));
+        var state = new InMemoryCoordinationStateStore();
+        var active = CreateActiveAggregate("task-reload", "lock-reload", "Assets/Scenes/Main.unity");
+        await SeedAsync(state, active).ConfigureAwait(false);
+        var unity = new FakeUnitySaveGateway();
+        var git = new FakeGitTaskGateway { FailPush = true, RemoteReachable = false };
+        var request = new SaveTaskRequest(
+            active.TaskId,
+            active.TaskBranch,
+            AuthorityFor(active),
+            "snapshot",
+            new OperationId("save-reload"));
+
+        try
+        {
+            using (var firstJournal = new FileOperationJournal(directory))
+            {
+                var first = await new SaveTaskWorkflow(state, firstJournal, unity, git)
+                    .ExecuteAsync(request).ConfigureAwait(false);
+                False(first.IsSuccess, "The first push should fail.");
+            }
+
+            using var reloadedJournal = new FileOperationJournal(directory);
+            var resumed = new SaveTaskWorkflow(state, reloadedJournal, unity, git);
+            var rebound = await resumed.ExecuteAsync(
+                request with { TaskBranch = "task/other" }).ConfigureAwait(false);
+            False(rebound.IsSuccess, "A reloaded save operation must reject a different Task branch.");
+            Equal("operation_branch_reused", rebound.Problem!.ErrorCode, "Branch identity must survive memory loss.");
+
+            git.FailPush = false;
+            git.RemoteReachable = true;
+            var success = await resumed.ExecuteAsync(request).ConfigureAwait(false);
+            True(success.IsSuccess, "The original branch can resume after reload.");
+            Equal(1, unity.SaveCalls, "Reload must not repeat Unity save.");
+            Equal(1, git.CommitCalls, "Reload must not create a second commit.");
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static async Task GitCliTaskGatewayKeepsMainReadOnlyAsync()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "projectsync-tests", Guid.NewGuid().ToString("N"));
+        var remote = Path.Combine(directory, "remote.git");
+        var working = Path.Combine(directory, "working");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            RunGit(directory, "init", "--bare", remote);
+            RunGit(directory, "init", "-b", "main", working);
+            RunGit(working, "config", "user.name", "ProjectSync Test");
+            RunGit(working, "config", "user.email", "test@example.invalid");
+            File.WriteAllText(Path.Combine(working, "sample.txt"), "baseline");
+            RunGit(working, "add", "sample.txt");
+            RunGit(working, "commit", "-m", "baseline");
+            RunGit(working, "remote", "add", "origin", remote);
+            RunGit(working, "push", "origin", "main");
+            var mainSha = RunGit(working, "rev-parse", "HEAD").Trim();
+            RunGit(working, "switch", "-c", "task/test-save");
+            File.WriteAllText(Path.Combine(working, "sample.txt"), "Task change");
+
+            var operationId = new OperationId("real-git-save");
+            var gateway = new GitCliTaskGateway(working);
+            var snapshot = await gateway.CreateSnapshotAsync(
+                "task/test-save", "ProjectSync Task snapshot", operationId, default).ConfigureAwait(false);
+            True(snapshot.IsSuccess, "A real Task snapshot should succeed: " + snapshot.Problem?.Message);
+            True(GitCommandPolicy.IsFullSha(snapshot.Value), "The snapshot must return a full commit SHA.");
+
+            var retry = await gateway.CreateSnapshotAsync(
+                "task/test-save", "ProjectSync Task snapshot", operationId, default).ConfigureAwait(false);
+            True(retry.IsSuccess, "Retry must find the existing snapshot.");
+            Equal(snapshot.Value, retry.Value, "One operation must not produce a second commit.");
+            Equal("1", RunGit(working, "rev-list", "--count", "main..HEAD").Trim(), "Only one Task commit should exist.");
+
+            var push = await gateway.PushCommitAsync("task/test-save", snapshot.Value!, operationId, default).ConfigureAwait(false);
+            True(push.IsSuccess, "Task ref push should succeed: " + push.Problem?.Message);
+            var reachable = await gateway.IsCommitReachableAsync("task/test-save", snapshot.Value!, default).ConfigureAwait(false);
+            True(reachable.IsSuccess && reachable.Value is true, "Snapshot must be reachable on the remote Task ref.");
+
+            var mainRemote = RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/main").Split('\t')[0];
+            var taskRemote = RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/task/test-save").Split('\t')[0];
+            Equal(mainSha, mainRemote, "Remote main must remain at its original SHA.");
+            Equal(snapshot.Value, taskRemote, "Only the Task ref should receive the snapshot.");
+
+            File.WriteAllText(Path.Combine(working, "later.txt"), "later Task work");
+            RunGit(working, "add", "later.txt");
+            RunGit(working, "commit", "-m", "later Task commit");
+            RunGit(working, "push", "origin", "task/test-save");
+            var laterSha = RunGit(working, "rev-parse", "HEAD").Trim();
+            var olderIsReachable = await gateway.IsCommitReachableAsync(
+                "task/test-save", snapshot.Value!, default).ConfigureAwait(false);
+            True(olderIsReachable.IsSuccess && olderIsReachable.Value is true,
+                "The saved commit remains reachable when the remote Task branch advances.");
+            var nonFastForward = await gateway.PushCommitAsync(
+                "task/test-save", snapshot.Value!, operationId, default).ConfigureAwait(false);
+            False(nonFastForward.IsSuccess, "An older snapshot must not overwrite the newer remote Task commit.");
+            Equal(laterSha, RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/task/test-save").Split('\t')[0],
+                "A rejected non-fast-forward push must preserve remote Task work.");
+
+            var forbidden = await gateway.PushCommitAsync("main", snapshot.Value!, operationId, default).ConfigureAwait(false);
+            False(forbidden.IsSuccess, "The gateway must refuse main even when the caller supplies a valid SHA.");
+            False(GitCommandPolicy.Validate(
+                    ["push", "origin", "HEAD:refs/heads/main"], operationId).IsSuccess,
+                "The low-level command policy must refuse a direct main refspec.");
+            Equal(mainSha, RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/main").Split('\t')[0],
+                "Forbidden requests must not mutate remote main.");
+
+            RunGit(working, "switch", "main");
+            File.WriteAllText(Path.Combine(working, "sample.txt"), "must not save on main");
+            var wrongCheckout = await gateway.CreateSnapshotAsync(
+                "task/test-save", "must fail", new OperationId("wrong-checkout"), default).ConfigureAwait(false);
+            False(wrongCheckout.IsSuccess, "Snapshot must fail when main is checked out.");
+            Equal(mainSha, RunGit(working, "rev-parse", "HEAD").Trim(), "Rejected snapshot must not commit to local main.");
+        }
+        finally
+        {
+            foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+            }
+
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static string RunGit(string workingDirectory, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Git did not start in test fixture.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Git fixture command failed ({process.ExitCode}): {string.Join(' ', arguments)}{Environment.NewLine}{error}");
+        }
+
+        return output;
     }
 
     private static async Task FileJournalPersistsAsync()

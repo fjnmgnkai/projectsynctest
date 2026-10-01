@@ -33,6 +33,12 @@ public sealed class SaveTaskWorkflow
         SaveTaskRequest request,
         CancellationToken cancellationToken = default)
     {
+        var branch = TaskBranchPolicy.RequireTaskBranch(request.TaskBranch, request.OperationId, "save_preflight");
+        if (!branch.IsSuccess)
+        {
+            return Outcome<SaveTaskResult>.Failure(branch.Problem!);
+        }
+
         var checkpoint = await _journal.LoadOrCreateAsync(
             OperationCheckpoint.Create(request.OperationId, Kind, request.TaskId),
             cancellationToken).ConfigureAwait(false);
@@ -47,6 +53,40 @@ public sealed class SaveTaskWorkflow
                 request.OperationId,
                 "journal",
                 "Operation ID is already bound to another workflow or Task."));
+        }
+
+        if (checkpoint.Data.TryGetValue("taskBranch", out var recordedBranch))
+        {
+            if (!string.Equals(recordedBranch, request.TaskBranch, StringComparison.Ordinal))
+            {
+                return Outcome<SaveTaskResult>.Failure(Problem.Create(
+                    "operation_branch_reused",
+                    ProblemCategory.Conflict,
+                    retryable: false,
+                    request.OperationId,
+                    "journal",
+                    "A save operation cannot be retried for a different Task branch."));
+            }
+        }
+        else
+        {
+            var snapshot = await _stateStore.ReadAsync(request.TaskId, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(snapshot.Value?.TaskBranch, request.TaskBranch, StringComparison.Ordinal))
+            {
+                return Outcome<SaveTaskResult>.Failure(Problem.Create(
+                    "task_branch_mismatch",
+                    ProblemCategory.Authorization,
+                    retryable: false,
+                    request.OperationId,
+                    "save_preflight",
+                    "Save target must exactly match the Task branch recorded in coordination state."));
+            }
+
+            checkpoint = checkpoint.Advance(
+                checkpoint.Phase,
+                checkpoint.IsTerminal,
+                values: [("taskBranch", request.TaskBranch)]);
+            await _journal.SaveAsync(checkpoint, cancellationToken).ConfigureAwait(false);
         }
 
         if (checkpoint.IsTerminal &&
@@ -172,6 +212,17 @@ public sealed class SaveTaskWorkflow
                 request.OperationId,
                 phase,
                 "Task coordination state does not exist."));
+        }
+
+        if (!string.Equals(snapshot.Value.TaskBranch, request.TaskBranch, StringComparison.Ordinal))
+        {
+            return Outcome<Unit>.Failure(Problem.Create(
+                "task_branch_mismatch",
+                ProblemCategory.Authorization,
+                retryable: false,
+                request.OperationId,
+                phase,
+                "Save target must exactly match the Task branch recorded in coordination state."));
         }
 
         return SessionAuthority.RequireMutationPermission(
