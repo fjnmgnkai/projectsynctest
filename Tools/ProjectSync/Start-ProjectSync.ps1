@@ -1,11 +1,17 @@
 [CmdletBinding()]
 param(
-    [switch]$BuildOnly
+    [switch]$BuildOnly,
+    [string]$TargetProjectPath
 )
 
 $ErrorActionPreference = 'Stop'
 $toolRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $toolRoot '..\..'))
+$targetProjectRoot = if ([string]::IsNullOrWhiteSpace($TargetProjectPath)) {
+    $repositoryRoot
+} else {
+    [IO.Path]::GetFullPath($TargetProjectPath)
+}
 $projectFile = Join-Path $toolRoot 'src\ProjectSync.Desktop\ProjectSync.Desktop.csproj'
 $executable = Join-Path $toolRoot 'src\ProjectSync.Desktop\bin\Debug\net8.0-windows\ProjectSync.Desktop.exe'
 
@@ -17,6 +23,15 @@ try {
 
     if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
         throw '.NET 8 SDK was not found on this development PC.'
+    }
+
+    foreach ($folder in @('Assets', 'Packages', 'ProjectSettings')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $targetProjectRoot $folder) -PathType Container)) {
+            throw "The selected target is not a Unity project: $targetProjectRoot"
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $targetProjectRoot '.git'))) {
+        throw "The selected target is not a Git checkout: $targetProjectRoot"
     }
 
     & dotnet build $projectFile --configuration Debug --nologo
@@ -33,8 +48,8 @@ try {
         exit 0
     }
 
-    $argumentLine = '--project "{0}"' -f $repositoryRoot
-    $process = Start-Process -FilePath $executable -WorkingDirectory $repositoryRoot -ArgumentList $argumentLine -PassThru
+    $argumentLine = '--project "{0}"' -f $targetProjectRoot
+    $process = Start-Process -FilePath $executable -WorkingDirectory $targetProjectRoot -ArgumentList $argumentLine -PassThru
     Write-Output "ProjectSync started (PID $($process.Id)): $executable"
 }
 catch {
