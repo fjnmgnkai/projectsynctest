@@ -27,6 +27,8 @@
 | Recovery | 保存段階をディスクへ記録。Commit後のPush失敗・応答喪失時はRemote到達を読み直し、同一Commitだけ再送する。自動reset/stash/破棄なし |
 | Deployment | ソースはこの作業Branch。実利用PCの実行ファイル・GitHub mainは別の状態として確認する。まだ本番配布確定ではない |
 
+開発PCの更新手順はRepository直下の`ProjectSync.cmd`に統一する。起動中のProjectSyncがあれば自動終了せず停止し、閉じた後に同じDebug出力先へ`dotnet build`して起動する。ZIPは他PC向けの配布物として残すが、このPCでの開発反復には使用しない。実行ファイルの所在と稼働中のプロセスを別々に確認する。
+
 ## 素材の規模検証
 
 参考Project `7d1mtest` の読み取り結果: `Assets`約3.21 GiB、100 MiB超のファイル6個で計約1.39 GiB。最大Sceneは約30.8 MiB。ルートの`Assets.zip`は約2.13 GBで共有対象外。ProjectSyncの保存対象は`Assets`/`Packages`/`ProjectSettings`/`.gitattributes`/`.gitignore`に限定し、Root ZIPは既にステージされていてもCommitしない。Branch切替時は未記録ファイルを含むローカル変更があれば停止するので、管理者は対象Cloneの`.gitignore`でバックアップZIPを除外する。

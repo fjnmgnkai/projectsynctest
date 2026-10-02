@@ -11,6 +11,12 @@
 
 通常操作で`main`へCommit/Push/Mergeしません。`reset --hard`、自動stash、force push、変更の自動破棄もしません。保存時にCommitするのは`Assets`、`Packages`、`ProjectSettings`、`.gitattributes`、`.gitignore`だけで、ルートの`Assets.zip`などは含めません。すでに別ファイルがGitにステージされていても、ProjectSyncのCommitは対象パスだけに限定します。
 
+## このPCでの開発用起動（ZIP不要）
+
+Repository直下の`ProjectSync.cmd`をダブルクリックしてください。毎回この作業フォルダーの最新ソースをビルドし、同じ場所にある開発版アプリを起動します。選択ProjectにはこのRepositoryを自動指定します。別のZIPをダウンロード・展開する必要はありません。
+
+更新後はProjectSyncのウィンドウを閉じ、同じ`.cmd`をもう一度起動してください。起動中のアプリをランチャーが勝手に終了したり、未保存データを破棄したりしません。旧ZIPから起動したProjectSyncも検出して停止するので、先にそのウィンドウを閉じてください。開発版はこのPCにインストール済みの.NET 8 SDKを使用します。別PCへの配布用ZIPとは別の運用です。
+
 ## 必要な準備
 
 - Windows x64、Unity 2022.3系の対象Project Clone、Git、Git LFS、GitHub CLI (`gh`)
