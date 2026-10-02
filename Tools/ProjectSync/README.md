@@ -23,6 +23,7 @@
 
 - Windows x64、Unity 2022.3系の対象Project Clone、Git、Git LFS、GitHub CLI (`gh`)
 - 各メンバーが自分のGitHubアカウントでGitのPushと`gh auth login`を設定し、Repositoryへの書き込み権限を持つこと
+- GitのCommit作者（`user.name` / `user.email`）とGitHubへの認証は別の設定です。異なるメンバーが各自のCloneとアカウントを使えます。Windows上のフォルダー所有者が現在のユーザーと異なる場合のみ、Gitの安全確認で停止します。所有元を確認し、信頼できるCloneに限って表示された正確なパスを`safe.directory`へ登録してください。全Repositoryを許可する`*`は使いません。
 - Unity Projectの`.gitignore`に`/UserSettings/`と、共有しないバックアップ（例: `/Assets.zip`）を設定すること
 - Unity Sceneを通常GitのYAMLとして管理すること。SceneをLFSにすると同じSceneの変更を通常のテキストマージで統合できません。
 - 100 MiB超の共有素材には、管理者が個別にGit LFS追跡を設定すること。未設定のまま保存しようとするとProjectSyncはCommit前に停止します。GitHub FreeのLFS単体ファイル上限2 GBも検査します。
@@ -34,7 +35,7 @@ GitHub FreeのLFS無料枠はRepository所有者側でストレージ10 GiB・�
 - このアプリはローカルTask運用の試験版です。PR作成の実GitHub終端間試験、Unity Editor Bridgeの実機保存試験、複数PC試験は未完了です。
 - Submitted SHAはPR本文に記録しますが、GitHub PRのHEADは後続Pushで変わり得ます。管理者は統合直前にHEADとSubmitted SHAを照合してください。再提出後、旧SHAに対する確認・検証結果を流用してはいけません。PR本文の競合更新を完全に原子的に防ぐ仕組みはないため、アプリは更新前後に再読込し、結果が一致しなければ要確認として停止します。
 - Private + GitHub FreeではGitHub側の強制Branch Protection/Ruleset品質Gateは利用できません。アプリはmainを書きませんが、Repositoryの書き込み権限を持つ人の外部Git操作まで防げません。
-- 旧仕様のLFS Scene Lock/Session協調、管理者Candidate検証、Build/Upload/Publishはこのローカル主体経路に接続していません。完成済みとは扱いません。
+- 旧仕様のLFS Scene Lock/Session協調、管理者Candidate検証、Build/Upload/Publishはこのローカル主体のツールには実装していません。利用者に複数の操作経路を見せないため、未使用の旧コードも削除しました。
 - 選択したProjectに既存の100 MiB超の通常Git履歴がある場合、追跡設定の追加だけでは過去のPush拒否を解消できません。履歴移行は自動では行いません。
 
 ## 開発と検証
@@ -44,4 +45,4 @@ dotnet build .\src\ProjectSync.Desktop\ProjectSync.Desktop.csproj
 dotnet run --project .\tests\ProjectSync.SpecTests\ProjectSync.SpecTests.csproj
 ```
 
-仕様テストは一時的なローカルGit remoteを使い、Task開始、main非変更、保存、Push失敗後の同一Commit再試行、バックアップ除外、大容量素材/Scene追跡の拒否を検査します。実Repositoryへの自動Push・PR作成はテストでは行いません。
+仕様テストは一時的なローカルGit remoteを使い、Task開始、main非変更、保存、Push失敗後の同一Commit再試行、バックアップ除外、大容量素材/Scene追跡の拒否を検査します。実Repositoryでの確認が必要な場合に限り、テストプログラムの`--live-start`、`--live-save`、`--live-submit`を明示指定して同じ本番ハンドラーを呼び出せます。通常のテスト実行では実Repositoryを変更しません。

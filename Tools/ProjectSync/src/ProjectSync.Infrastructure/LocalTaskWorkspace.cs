@@ -683,8 +683,8 @@ public sealed class LocalTaskWorkspace
 
         return result.Value!.ExitCode == 0
             ? result
-            : Failure<GitCommandResult>("git_command_failed", ProblemCategory.ExternalSystem, operationId,
-                phase, "Git操作に失敗しました。ローカル状態を保持して停止しました。");
+            : Outcome<GitCommandResult>.Failure(
+                GitCommandFailure.FromResult(result.Value, _repositoryPath, operationId, phase));
     }
 
     private FileStream AcquireLocalLease()

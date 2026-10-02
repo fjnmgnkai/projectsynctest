@@ -120,6 +120,29 @@ public static class GitCommandPolicy
 
 public sealed record GitCommandResult(int ExitCode, string StandardOutput, string StandardError);
 
+internal static class GitCommandFailure
+{
+    public static Problem FromResult(
+        GitCommandResult result,
+        string repositoryPath,
+        OperationId operationId,
+        string phase)
+    {
+        if (result.StandardError.Contains("detected dubious ownership", StringComparison.OrdinalIgnoreCase))
+        {
+            return Problem.Create(
+                "git_repository_owner_untrusted", ProblemCategory.Configuration, false,
+                operationId, phase,
+                "Gitがこのローカルフォルダーの所有者を信頼していません。フォルダーの所有者を確認し、信頼できる場合だけ " +
+                $"git config --global --add safe.directory \"{repositoryPath}\" を実行してください。GitHubアカウントの違いではありません。");
+        }
+
+        return Problem.Create(
+            "git_command_failed", ProblemCategory.ExternalSystem, false,
+            operationId, phase, "Git操作に失敗しました。ローカルとRemoteの状態を保持して停止しました。");
+    }
+}
+
 internal sealed class SafeGitProcessRunner
 {
     public async Task<Outcome<GitCommandResult>> RunAsync(

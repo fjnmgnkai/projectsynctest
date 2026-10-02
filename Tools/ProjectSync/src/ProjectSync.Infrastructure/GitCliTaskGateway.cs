@@ -324,7 +324,8 @@ public sealed class GitCliTaskGateway : IGitTaskGateway
             cancellationToken).ConfigureAwait(false);
         return !result.IsSuccess || result.Value!.ExitCode == 0
             ? result
-            : GitFailure<GitCommandResult>(operationId, phase, "Git command did not complete successfully. Local and remote facts must be checked before retrying.");
+            : Outcome<GitCommandResult>.Failure(
+                GitCommandFailure.FromResult(result.Value, _repositoryPath, operationId, phase));
     }
 
     private static Outcome<T> GitFailure<T>(OperationId operationId, string phase, string message) =>
