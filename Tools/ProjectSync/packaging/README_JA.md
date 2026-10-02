@@ -11,8 +11,8 @@ ZIPを展開し、`ProjectSync/ProjectSync.Desktop.exe`を起動してくださ�
 
 ## 日常操作
 
-- 新しい作業: Unityを閉じ、ローカル変更がない状態で作業名を入力して押します。最新remote `main`から短命Task Branchを作ります。
-- 作業を再開: 再開したいローカルTask Branchを指定して押します。Branchを切り替える場合はUnityを閉じ、ローカル変更をなくしてください。
+- 新しい作業: 選択したUnityプロジェクトのEditorを閉じ、ローカル変更がない状態で作業名を入力して押します。最新remote `main`から短命Task Branchを作ります。別のUnityプロジェクトは開いたままで構いません。
+- 作業を再開: 再開したいローカルTask Branchを指定して押します。Branchを切り替える場合は選択したUnityプロジェクトのEditorを閉じ、ローカル変更をなくしてください。
 - 作業を保存: Unityが開いていればScene/Assetを保存し、Task BranchへCommit・Pushして到達を確認します。通信失敗時はCommitを残すので、同じボタンで再試行します。
 - 変更を提出: 保存後に押すとPRを作り、本文にSubmitted Commit SHAを記録します。同じTaskで後から保存した場合は再度押して新SHAを再提出します。管理者はそのSHAとPR HEADを確認してから統合してください。
 

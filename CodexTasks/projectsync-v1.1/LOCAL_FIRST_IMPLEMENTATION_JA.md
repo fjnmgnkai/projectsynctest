@@ -36,7 +36,8 @@
 ## 実施した検証
 
 - .NET Core/Infrastructure/WPFビルド成功、警告0。
-- 17/17 specification tests成功。一時的なbare Git remoteで、新Taskのmain SHA固定、TaskだけのCommit/Push、バックアップZIP非混入、Push失敗後の同一Commit再送、100 MiB超の非LFS素材とLFS SceneのCommit前拒否を確認。PR再提出の本文変換と不正形式拒否も検査。
+- 18/18 specification tests成功。一時的なbare Git remoteで、新Taskのmain SHA固定、TaskだけのCommit/Push、バックアップZIP非混入、Push失敗後の同一Commit再送、100 MiB超の非LFS素材とLFS SceneのCommit前拒否を確認。PR再提出の本文変換と不正形式拒否、Unity Editor判定が対象Projectに限られることも検査。
+- 2026-10-03の実機観察では、`projectsync`の`Temp/UnityLockfile`は存在せず、別Projectの同名ファイルだけが排他ロック中だった。旧版はPC上のすべての`Unity.exe`を検出したため、別ProjectのEditorとAsset Import Workerで誤停止した。現版は選択Projectのロック状態だけを読み、ファイル未存在・残存しているが非ロックなら閉じていると判定する。I/Oエラーやアクセス拒否は安全側で開いている扱いとする。
 - `gh auth status`で現在のPCの個人アカウント設定を確認し、`gh pr list`の実JSONフィールドを読み取り検証。開発PR #2の本文更新は実行したが、アプリ経由の新規PR作成・再提出は未検証。
 - GitHub上の旧`ProjectSync Required Check`は`disabled_manually`を確認。ソースのActions workflowも削除。
 - Unity Editor Bridgeの実保存、別PCからの同時利用、大容量LFS実Push、実PR提出/再提出、管理者Conflict解決、Build/Uploadは未検証。

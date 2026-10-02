@@ -4,8 +4,8 @@
 
 ## 現在動く操作
 
-1. 「新しい作業」: Unityを閉じ、ローカル変更がない状態で最新のremote `main`を取得し、そこから新しい`task/...` Branchを作ります。作業中にmainを自動で取り込みません。
-2. 「作業を再開」: 指定したローカルTask Branchへ戻ります。Branch切替前はUnityを閉じ、ローカル変更をなくす必要があります。
+1. 「新しい作業」: 選択したUnityプロジェクトのEditorを閉じ、ローカル変更がない状態で最新のremote `main`を取得し、そこから新しい`task/...` Branchを作ります。作業中にmainを自動で取り込みません。別のUnityプロジェクトが開いていても構いません。
+2. 「作業を再開」: 指定したローカルTask Branchへ戻ります。Branch切替前は選択したUnityプロジェクトのEditorを閉じ、ローカル変更をなくす必要があります。
 3. 「作業を保存」: Unityが開いていればScene/Assetを保存し、Task Branchへ対象ファイルだけをCommit/Pushし、remote到達を確認します。Push失敗時はローカルCommitと`UserSettings/ProjectSync/save-state.json`を残し、次回同じCommitのPushだけ再試行します。
 4. 「変更を提出」: GitHub CLIでPRを作り、PR本文にSubmitted Commit SHAを記録します。保存後に同じボタンで再提出すると、ProjectSyncが作成した既存PRの本文にある提出SHAを新しいHEADへ更新します。PR本文やHEADに予期しない変更があれば停止します。
 

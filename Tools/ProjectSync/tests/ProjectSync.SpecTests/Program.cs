@@ -22,6 +22,7 @@ internal static class Program
         ("save branch binding survives journal reload", SaveBranchBindingSurvivesReloadAsync),
         ("real Git Task snapshot and push leave main unchanged", GitCliTaskGatewayKeepsMainReadOnlyAsync),
         ("local-first Task save retries the same commit after remote failure", LocalFirstSaveRecoversAsync),
+        ("Unity Editor detection is scoped to the selected project", UnityEditorDetectionIsProjectScopedAsync),
         ("PR resubmission replaces only the recorded SHA and refuses foreign bodies", SubmissionBodyRebindIsStrictAsync),
         ("large ordinary assets and LFS Scenes are rejected before commit", AssetPolicyRejectsUnsafeTrackingAsync),
         ("operation journal survives process-memory loss", FileJournalPersistsAsync)
@@ -461,6 +462,55 @@ internal static class Program
             True(resumed.IsSuccess, "An existing local Task can be resumed.");
             Equal(committedSha, RunGit(working, "rev-parse", "HEAD").Trim(),
                 "Resuming a Task must restore its own commit without merging main.");
+        }
+        finally
+        {
+            DeleteLocalFixture(directory);
+        }
+    }
+
+    private static async Task UnityEditorDetectionIsProjectScopedAsync()
+    {
+        var (directory, _, working, _) = CreateLocalFixture();
+        try
+        {
+            var otherProject = Path.Combine(directory, "other-project");
+            Directory.CreateDirectory(Path.Combine(otherProject, "Temp"));
+            using var otherLock = new FileStream(
+                Path.Combine(otherProject, "Temp", "UnityLockfile"),
+                FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+
+            False(LocalTaskWorkspace.IsUnityEditorRunningForProject(working),
+                "An Editor for another project must not be attributed to the selected project.");
+            True(LocalTaskWorkspace.IsUnityEditorRunningForProject(otherProject),
+                "The locked project must be recognized as open.");
+
+            var workspace = new LocalTaskWorkspace(working);
+            var started = await workspace.StartAsync("other Unity is open").ConfigureAwait(false);
+            True(started.IsSuccess, "Task start must work while only another project is open: " + started.Problem?.Message);
+
+            File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "saved with another Unity open");
+            var saved = await workspace.SaveAsync().ConfigureAwait(false);
+            True(saved.IsSuccess, "Save must not contact the selected project's Unity pipe when it is closed: " + saved.Problem?.Message);
+
+            Directory.CreateDirectory(Path.Combine(working, "Temp"));
+            var targetLockPath = Path.Combine(working, "Temp", "UnityLockfile");
+            using (var targetLock = new FileStream(targetLockPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+            {
+                True(LocalTaskWorkspace.IsUnityEditorRunningForProject(working),
+                    "The selected project's active lock must be recognized.");
+                var blocked = await workspace.StartAsync("must be blocked").ConfigureAwait(false);
+                False(blocked.IsSuccess, "Branch creation must stop while the selected project is open.");
+                Equal("unity_must_be_closed", blocked.Problem!.ErrorCode,
+                    "The user-facing error must identify the selected Editor state.");
+            }
+
+            False(LocalTaskWorkspace.IsUnityEditorRunningForProject(working),
+                "An unlocked leftover UnityLockfile must not block the project.");
+            File.Delete(targetLockPath);
+            Directory.Delete(Path.Combine(working, "Temp"));
+            var restarted = await workspace.StartAsync("closed again").ConfigureAwait(false);
+            True(restarted.IsSuccess, "A closed selected project should allow the next Task: " + restarted.Problem?.Message);
         }
         finally
         {

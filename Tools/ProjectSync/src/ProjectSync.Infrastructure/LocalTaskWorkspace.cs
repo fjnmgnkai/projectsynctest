@@ -34,7 +34,7 @@ public sealed class LocalTaskWorkspace
         _repositoryPath = Path.GetFullPath(repositoryPath);
         _snapshots = new GitCliTaskGateway(_repositoryPath, gitTimeout ?? TimeSpan.FromMinutes(30));
         _unity = new UnityBridgeClient(_repositoryPath, TimeSpan.FromMinutes(2));
-        _unityEditorRunning = unityEditorRunning ?? IsAnyUnityEditorRunning;
+        _unityEditorRunning = unityEditorRunning ?? (() => IsUnityEditorRunningForProject(_repositoryPath));
         _localDirectory = Path.Combine(_repositoryPath, "UserSettings", "ProjectSync");
         _gitTimeout = gitTimeout ?? TimeSpan.FromMinutes(2);
     }
@@ -600,7 +600,7 @@ public sealed class LocalTaskWorkspace
         if (_unityEditorRunning())
         {
             return Failure<Unit>("unity_must_be_closed", ProblemCategory.Validation, operationId,
-                "branch_switch", "Branch切替前にUnity Editorを閉じてください。");
+                "branch_switch", "Branch切替前に、選択中のUnityプロジェクトを開いているEditorを閉じてください。");
         }
 
         var status = await ReadStatusAsync(operationId, cancellationToken).ConfigureAwait(false);
@@ -722,19 +722,31 @@ public sealed class LocalTaskWorkspace
         File.Move(temporary, path, overwrite: true);
     }
 
-    private static bool IsAnyUnityEditorRunning()
+    internal static bool IsUnityEditorRunningForProject(string repositoryPath)
     {
-        var processes = Process.GetProcessesByName("Unity");
+        // Unity 2022.3 holds this project-local file exclusively while the Editor is open.
+        // A Unity.exe belonging to another project must not block this repository.
+        var lockPath = Path.Combine(repositoryPath, "Temp", "UnityLockfile");
         try
         {
-            return processes.Length != 0;
+            using var probe = new FileStream(lockPath, FileMode.Open, FileAccess.Read, FileShare.None);
+            return false; // A leftover but unlocked file is not an active Editor.
         }
-        finally
+        catch (FileNotFoundException)
         {
-            foreach (var process in processes)
-            {
-                process.Dispose();
-            }
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return true; // A locked file (or unreadable I/O state) must block branch changes.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
         }
     }
 
