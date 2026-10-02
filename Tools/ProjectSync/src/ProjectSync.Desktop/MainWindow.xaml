@@ -3,12 +3,13 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="ProjectSync"
         Width="860"
-        Height="560"
+        Height="620"
         MinWidth="720"
         MinHeight="480"
         Background="#FFF5F7FA">
     <Grid Margin="28">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -31,7 +32,11 @@
                 CornerRadius="8">
             <StackPanel>
                 <TextBlock FontWeight="SemiBold" Text="ワークスペース" />
-                <TextBlock Margin="0,6,0,0" Text="{Binding ProjectPath}" TextWrapping="Wrap" />
+                <TextBlock Margin="0,6,0,0" Text="{Binding ProjectPathDisplay}" TextWrapping="Wrap" />
+                <Button Content="Unityプロジェクトを選択"
+                        Click="SelectProject_Click"
+                        HorizontalAlignment="Left"
+                        Margin="0,10,0,0" />
                 <TextBlock Margin="0,8,0,0"
                            FontWeight="SemiBold"
                            Foreground="{Binding StatusBrush}"
@@ -40,23 +45,40 @@
             </StackPanel>
         </Border>
 
-        <WrapPanel Grid.Row="2">
+        <Grid Grid.Row="2" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                <TextBlock Text="作業名（新規・提出時）" />
+                <TextBox Margin="0,5,0,0"
+                         Text="{Binding TaskName, UpdateSourceTrigger=PropertyChanged}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                <TextBlock Text="再開するTask Branch" />
+                <TextBox Margin="0,5,0,0"
+                         Text="{Binding ResumeBranch, UpdateSourceTrigger=PropertyChanged}" />
+            </StackPanel>
+        </Grid>
+
+        <WrapPanel Grid.Row="3">
             <Button Content="新しい作業"
-                    IsEnabled="{Binding CanStartTask}"
-                    ToolTip="GitHub設定とProjectSync Service接続後に利用できます。" />
+                    Command="{Binding StartCommand}"
+                    ToolTip="Unityを閉じ、変更のない状態から最新mainを取得してTask Branchを作成します。" />
             <Button Content="作業を再開"
-                    IsEnabled="{Binding CanResumeTask}"
-                    ToolTip="共有Task取得後に利用できます。" />
+                    Command="{Binding ResumeCommand}"
+                    ToolTip="指定したローカルTask Branchへ戻ります。" />
             <Button Content="作業を保存"
-                    IsEnabled="{Binding CanSaveTask}"
-                    ToolTip="有効なSessionとLFS Lockの一致が必要です。" />
+                    Command="{Binding SaveCommand}"
+                    ToolTip="Unity保存、Task Commit、Push、Remote到達確認を行います。" />
             <Button Content="変更を提出"
-                    IsEnabled="{Binding CanSubmitTask}"
-                    ToolTip="remote到達確認済みSnapshotが必要です。" />
+                    Command="{Binding SubmitCommand}"
+                    ToolTip="現在のTask Commit SHAを固定してPull Requestを提出します。" />
             <Button Content="状態を再確認" Command="{Binding RefreshCommand}" />
         </WrapPanel>
 
-        <Border Grid.Row="3"
+        <Border Grid.Row="4"
                 Margin="0,8,0,0"
                 Padding="16"
                 Background="#FF17202A"

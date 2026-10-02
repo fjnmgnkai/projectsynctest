@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using ProjectSync.Core;
 using ProjectSync.Infrastructure;
 
@@ -5,536 +6,249 @@ namespace ProjectSync.SpecTests;
 
 internal static class Program
 {
-    private static readonly (string Name, Func<Task> Run)[] Tests =
-    [
-        ("same-account concurrent start permits exactly one session", ConcurrentStartPermitsOneSessionAsync),
-        ("start retry reuses the same issue lock and generation", StartRetryIsIdempotentAsync),
-        ("issue success and lock failure enters recovery required", LockFailureAfterIssueRequiresRecoveryAsync),
-        ("save retry preserves commit and retries only push", SaveRetryPreservesCommitAsync),
-        ("abort cannot complete until remote unlock is confirmed", AbortWaitsForUnlockAsync),
-        ("candidate validation is invalidated by every identity change", CandidateIdentityInvalidatesAsync),
-        ("build target SHA never follows later main", BuildTargetShaIsFixedAsync),
-        ("deployment projection forces auto_merge false", DeploymentProjectionDisablesAutoMergeAsync),
-        ("forbidden Git operations are rejected before process spawn", GitPolicyRejectsForbiddenCommandsAsync),
-        ("operation journal survives process-memory loss", FileJournalPersistsAsync)
-    ];
-
-    public static async Task<int> Main()
+    public static async Task<int> Main(string[] args)
     {
-        var failures = new List<string>();
-        foreach (var (name, run) in Tests)
+        if (args.Length == 2 && args[0] is "--live-start" or "--live-save" or "--live-submit")
+        {
+            // Explicit opt-in: these commands mutate and, for save, push the selected real repository.
+            var workspace = new LocalTaskWorkspace(args[1]);
+            if (args[0] == "--live-start")
+            {
+                var started = await workspace.StartAsync("ProjectSync 実Commit・Push確認");
+                Console.WriteLine(started.IsSuccess ? $"BRANCH={started.Value}" : $"ERROR={started.Problem}");
+                return started.IsSuccess ? 0 : 1;
+            }
+
+            if (args[0] == "--live-submit")
+            {
+                var submitted = await workspace.SubmitAsync("ProjectSync 実動作確認");
+                Console.WriteLine(submitted.IsSuccess
+                    ? $"PR={submitted.Value!.Url} SHA={submitted.Value.SubmittedSha}"
+                    : $"ERROR={submitted.Problem}");
+                return submitted.IsSuccess ? 0 : 1;
+            }
+
+            var saved = await workspace.SaveAsync();
+            Console.WriteLine(saved.IsSuccess
+                ? $"BRANCH={saved.Value!.Branch} SHA={saved.Value.CommitSha}"
+                : $"ERROR={saved.Problem}");
+            return saved.IsSuccess ? 0 : 1;
+        }
+
+        if (args.Length != 0)
+        {
+            Console.Error.WriteLine("Usage: no arguments, --live-start, --live-save, or --live-submit <Unity clone>.");
+            return 2;
+        }
+
+        var tests = new (string Name, Func<Task> Run)[]
+        {
+            ("forbidden Git operations", GitPolicyAsync),
+            ("local Task start/save/push and recovery", LocalWorkflowAsync),
+            ("Unity project lock detection", UnityLockAsync),
+            ("submitted SHA body binding", SubmissionBindingAsync),
+            ("LFS Scene and large ordinary asset rejection", AssetPolicyAsync)
+        };
+        var failed = 0;
+        foreach (var (name, run) in tests)
         {
             try
             {
-                await run().ConfigureAwait(false);
-                Console.WriteLine($"PASS {name}");
+                await run();
+                Console.WriteLine("PASS " + name);
             }
-            catch (Exception exception)
+            catch (Exception error)
             {
-                failures.Add(name);
-                Console.Error.WriteLine($"FAIL {name}{Environment.NewLine}{exception}");
+                failed++;
+                Console.Error.WriteLine($"FAIL {name}: {error}");
             }
         }
 
-        Console.WriteLine($"{Tests.Length - failures.Count}/{Tests.Length} tests passed.");
-        return failures.Count == 0 ? 0 : 1;
+        Console.WriteLine($"{tests.Length - failed}/{tests.Length} tests passed.");
+        return failed == 0 ? 0 : 1;
     }
 
-    private static async Task ConcurrentStartPermitsOneSessionAsync()
+    private static Task GitPolicyAsync()
     {
-        var fixture = new StartFixture();
-        var first = fixture.CreateRequest("device-a", "session-a", "op-a");
-        var second = fixture.CreateRequest("device-b", "session-b", "op-b");
-
-        var results = await Task.WhenAll(
-            fixture.Workflow.ExecuteAsync(first),
-            fixture.Workflow.ExecuteAsync(second)).ConfigureAwait(false);
-
-        Equal(1, results.Count(result => result.IsSuccess), "Exactly one start must succeed.");
-        Equal(1, results.Count(result => !result.IsSuccess), "Exactly one start must be rejected.");
-        var state = (await fixture.State.ReadAsync("task-100", default).ConfigureAwait(false)).Value;
-        NotNull(state, "Coordination state must exist.");
-        Equal(TaskLifecycle.Active, state!.Lifecycle, "Winner must become active.");
-        Equal(1L, state.Generation, "Only one generation may be issued.");
-        Equal(1, fixture.Issues.UniqueIssueCount, "Only one Task Issue may exist.");
-        Equal(1, fixture.Locks.LockCount, "Only one LFS lock may exist.");
-    }
-
-    private static async Task StartRetryIsIdempotentAsync()
-    {
-        var fixture = new StartFixture();
-        var request = fixture.CreateRequest("device-a", "session-a", "op-a");
-        var first = await fixture.Workflow.ExecuteAsync(request).ConfigureAwait(false);
-        var second = await fixture.Workflow.ExecuteAsync(request).ConfigureAwait(false);
-
-        True(first.IsSuccess && second.IsSuccess, "Both the first execution and retry must succeed.");
-        Equal(first.Value!.Coordination.Generation, second.Value!.Coordination.Generation, "Retry must not increment generation.");
-        Equal(first.Value.Lock.LockId, second.Value.Lock.LockId, "Retry must reuse the same lock.");
-        Equal(1, fixture.Issues.UniqueIssueCount, "Retry must not create another Issue.");
-        Equal(1, fixture.Locks.AcquireSuccessCount, "Retry must not acquire another lock.");
-    }
-
-    private static async Task LockFailureAfterIssueRequiresRecoveryAsync()
-    {
-        var fixture = new StartFixture();
-        fixture.Locks.FailAcquire = true;
-        var result = await fixture.Workflow.ExecuteAsync(
-            fixture.CreateRequest("device-a", "session-a", "op-a")).ConfigureAwait(false);
-
-        False(result.IsSuccess, "Start must fail when the LFS lock cannot be acquired.");
-        var state = (await fixture.State.ReadAsync("task-100", default).ConfigureAwait(false)).Value;
-        NotNull(state, "Coordination state must be retained for recovery.");
-        Equal(CoordinationHealth.RecoveryRequired, state!.Health, "Partial cross-system success must require recovery.");
-        Equal(TaskLifecycle.RecoveryRequired, state.Lifecycle, "Task must be stopped in RecoveryRequired.");
-        Equal(1, fixture.Issues.UniqueIssueCount, "The successful Issue must be retained.");
-    }
-
-    private static async Task SaveRetryPreservesCommitAsync()
-    {
-        var state = new InMemoryCoordinationStateStore();
-        var active = CreateActiveAggregate("task-save", "lock-save", "Assets/Scenes/Main.unity");
-        await SeedAsync(state, active).ConfigureAwait(false);
-        var journal = new InMemoryOperationJournal();
-        var unity = new FakeUnitySaveGateway();
-        var git = new FakeGitTaskGateway { FailPush = true, RemoteReachable = false };
-        var workflow = new SaveTaskWorkflow(state, journal, unity, git);
-        var request = new SaveTaskRequest(
-            "task-save",
-            "task/task-save",
-            AuthorityFor(active),
-            "ProjectSync snapshot",
-            new OperationId("save-op"));
-
-        var first = await workflow.ExecuteAsync(request).ConfigureAwait(false);
-        False(first.IsSuccess, "First push must fail.");
-        Equal(1, unity.SaveCalls, "Unity save must complete once.");
-        Equal(1, git.CommitCalls, "Snapshot commit must remain after push failure.");
-
-        git.FailPush = false;
-        git.RemoteReachable = true;
-        var retry = await workflow.ExecuteAsync(request).ConfigureAwait(false);
-        True(retry.IsSuccess, "Retry must finish after remote reachability is confirmed.");
-        Equal(1, unity.SaveCalls, "Retry must not repeat an already committed Unity-save stage.");
-        Equal(1, git.CommitCalls, "Retry must not create a second commit.");
-        Equal(2, git.PushCalls, "Only push must be retried.");
-        Equal("commit-1", retry.Value!.CommitSha, "The original commit must be pushed.");
-    }
-
-    private static async Task AbortWaitsForUnlockAsync()
-    {
-        var state = new InMemoryCoordinationStateStore();
-        var active = CreateActiveAggregate("task-abort", "lock-abort", "Assets/Scenes/Main.unity");
-        await SeedAsync(state, active).ConfigureAwait(false);
-        var journal = new InMemoryOperationJournal();
-        var protector = new FakeLocalDataProtector();
-        var locks = new FakeLfsLockGateway();
-        locks.Seed(new LfsLockReference("lock-abort", "Assets/Scenes/Main.unity", "same-user"));
-        locks.FailRelease = true;
-        var workflow = new AbortSceneTaskWorkflow(state, journal, protector, locks);
-        var request = new AbortSceneTaskRequest(
-            "task-abort",
-            AuthorityFor(active),
-            new OperationId("abort-op"));
-
-        var first = await workflow.ExecuteAsync(request).ConfigureAwait(false);
-        False(first.IsSuccess, "Abort must not complete when unlock fails.");
-        var pending = (await state.ReadAsync("task-abort", default).ConfigureAwait(false)).Value;
-        Equal(TaskLifecycle.UnlockPending, pending!.Lifecycle, "Task must remain UnlockPending.");
-        True(pending.ActiveSession is null, "Old session must stay revoked.");
-
-        locks.FailRelease = false;
-        var retry = await workflow.ExecuteAsync(request).ConfigureAwait(false);
-        True(retry.IsSuccess, "Abort retry must complete after verified unlock.");
-        var aborted = (await state.ReadAsync("task-abort", default).ConfigureAwait(false)).Value;
-        Equal(TaskLifecycle.Aborted, aborted!.Lifecycle, "Task must become Aborted only after verification.");
-        Equal(1, protector.Calls, "Local preservation must not be repeated.");
-    }
-
-    private static Task CandidateIdentityInvalidatesAsync()
-    {
-        var baseline = new CandidateIdentity("submitted", "base", "candidate", "resolution", 3);
-        True(baseline.IsValidationApplicableTo(baseline), "Exact identity must reuse validation.");
-        False(baseline.IsValidationApplicableTo(baseline with { SubmittedCommitSha = "submitted-2" }), "Submitted SHA change must invalidate.");
-        False(baseline.IsValidationApplicableTo(baseline with { BaseMainSha = "base-2" }), "Base Main change must invalidate.");
-        False(baseline.IsValidationApplicableTo(baseline with { CandidateSha = "candidate-2" }), "Candidate change must invalidate.");
-        False(baseline.IsValidationApplicableTo(baseline with { ConflictResolutionDigest = "resolution-2" }), "Resolution change must invalidate.");
-        False(baseline.IsValidationApplicableTo(baseline with { Generation = 4 }), "Generation change must invalidate.");
+        var id = new OperationId("policy-test");
+        var sha = new string('a', 40);
+        Check(!GitCommandPolicy.Validate(["reset", "--hard", "HEAD"], id).IsSuccess, "hard reset accepted");
+        Check(!GitCommandPolicy.Validate(["stash", "push"], id).IsSuccess, "stash accepted");
+        Check(!GitCommandPolicy.Validate(["push", "--force", "origin", "task/a"], id).IsSuccess, "force push accepted");
+        Check(!GitCommandPolicy.Validate(["clean", "-fd"], id).IsSuccess, "clean accepted");
+        Check(!GitCommandPolicy.Validate(["push", "origin", $"{sha}:refs/heads/main"], id).IsSuccess, "main push accepted");
+        Check(GitCommandPolicy.Validate(["push", "--porcelain", "origin", $"{sha}:refs/heads/task/a"], id).IsSuccess, "Task push rejected");
+        Check(!TaskBranchPolicy.RequireTaskBranch("main", id, "test").IsSuccess, "main branch accepted");
+        var owner = GitCommandFailure.FromResult(
+            new GitCommandResult(128, "", "fatal: detected dubious ownership in repository"),
+            @"C:\Unity\Team", id, "status");
+        Check(owner.ErrorCode == "git_repository_owner_untrusted" &&
+              owner.Message.Contains("safe.directory", StringComparison.Ordinal) &&
+              owner.Message.Contains("GitHubアカウントの違いではありません", StringComparison.Ordinal),
+            "Local ownership failure must be actionable and distinguish GitHub identity");
         return Task.CompletedTask;
     }
 
-    private static Task BuildTargetShaIsFixedAsync()
+    private static async Task LocalWorkflowAsync()
     {
-        var attempt = BuildAttempt.Start(
-                "build-1",
-                "main-sha-at-start",
-                "wrld_test",
-                "Windows",
-                "builder-a",
-                DateTimeOffset.UtcNow)
-            .BeginBuild()
-            .RecordUpload(UploadOutcome.Success, "upload-receipt")
-            .MarkDeploymentRecordPending()
-            .Complete(DateTimeOffset.UtcNow.AddMinutes(1));
+        using var fixture = new LocalGitFixture();
+        var workspace = new LocalTaskWorkspace(fixture.Working, unityEditorRunning: () => false);
+        var started = await workspace.StartAsync("test");
+        Check(started.IsSuccess, "Task start failed: " + started.Problem);
+        Check(fixture.Git("rev-parse", "HEAD").Trim() == fixture.MainSha, "Task not based on remote main");
+        File.WriteAllText(Path.Combine(fixture.Working, "Assets", "sample.txt"), "first edit");
+        File.WriteAllText(Path.Combine(fixture.Working, "Assets.zip"), "local backup");
+        fixture.Git("add", "-f", "Assets.zip");
+        var saved = await workspace.SaveAsync();
+        Check(saved.IsSuccess, "First save failed: " + saved.Problem);
+        Check(fixture.RemoteSha(started.Value!) == saved.Value!.CommitSha, "Remote Task SHA mismatch");
+        Check(fixture.RemoteSha("main") == fixture.MainSha, "Remote main changed");
+        Check(fixture.Git("ls-tree", "-r", "--name-only", "HEAD", "Assets.zip").Trim().Length == 0, "Backup entered commit");
+        fixture.Git("rm", "--cached", "--", "Assets.zip");
 
-        Equal("main-sha-at-start", attempt.BuildTargetSha, "BuildTargetSHA must never follow later main.");
-        Equal(UploadOutcome.Success, attempt.UploadOutcome, "Upload result must be independently recorded.");
+        File.WriteAllText(Path.Combine(fixture.Working, "Assets", "sample.txt"), "second edit");
+        fixture.Git("remote", "set-url", "origin", Path.Combine(fixture.Root, "unavailable.git"));
+        var failed = await workspace.SaveAsync();
+        Check(!failed.IsSuccess, "Unavailable remote reported success");
+        var retainedSha = fixture.Git("rev-parse", "HEAD").Trim();
+        Check(retainedSha != saved.Value.CommitSha, "Local commit lost after push failure");
+        fixture.Git("remote", "set-url", "origin", fixture.Remote);
+        var retried = await new LocalTaskWorkspace(fixture.Working, unityEditorRunning: () => false).SaveAsync();
+        Check(retried.IsSuccess, "Push retry failed: " + retried.Problem);
+        Check(retried.Value!.CommitSha == retainedSha, "Retry created another commit");
+        Check(fixture.RemoteSha(started.Value!) == retainedSha, "Retry did not reach remote");
+        Check(fixture.RemoteSha("main") == fixture.MainSha, "Retry changed main");
+
+        var next = await workspace.StartAsync("next");
+        Check(next.IsSuccess && fixture.Git("rev-parse", "HEAD").Trim() == fixture.MainSha,
+            "Next Task did not start from main");
+        var resumed = await workspace.ResumeAsync(started.Value!);
+        Check(resumed.IsSuccess && fixture.Git("rev-parse", "HEAD").Trim() == retainedSha,
+            "Task resume did not restore Task HEAD");
+    }
+
+    private static async Task UnityLockAsync()
+    {
+        using var fixture = new LocalGitFixture();
+        var other = Path.Combine(fixture.Root, "other", "Temp");
+        Directory.CreateDirectory(other);
+        using var otherLock = new FileStream(Path.Combine(other, "UnityLockfile"), FileMode.CreateNew,
+            FileAccess.ReadWrite, FileShare.None);
+        Check(!LocalTaskWorkspace.IsUnityEditorRunningForProject(fixture.Working), "Other Editor blocked this clone");
+        var workspace = new LocalTaskWorkspace(fixture.Working);
+        Check((await workspace.StartAsync("other editor open")).IsSuccess, "Other Editor blocked Task start");
+        var temp = Path.Combine(fixture.Working, "Temp");
+        Directory.CreateDirectory(temp);
+        using (var ownLock = new FileStream(Path.Combine(temp, "UnityLockfile"), FileMode.CreateNew,
+                   FileAccess.ReadWrite, FileShare.None))
+        {
+            Check(LocalTaskWorkspace.IsUnityEditorRunningForProject(fixture.Working), "Own Editor not detected");
+            var blocked = await workspace.StartAsync("must block");
+            Check(!blocked.IsSuccess && blocked.Problem!.ErrorCode == "unity_must_be_closed", "Own Editor did not block switch");
+        }
+
+        Check(!LocalTaskWorkspace.IsUnityEditorRunningForProject(fixture.Working), "Stale unlocked lockfile blocked project");
+    }
+
+    private static Task SubmissionBindingAsync()
+    {
+        const string oldSha = "1111111111111111111111111111111111111111";
+        const string newSha = "2222222222222222222222222222222222222222";
+        var body = $"<!-- ProjectSync-Submitted-SHA: {oldSha} -->\n\n提出Commit: `{oldSha}`\n管理者メモ\n";
+        Check(LocalTaskWorkspace.TryUpdateSubmissionBody(body, newSha, out var updated), "Owned body not updated");
+        Check(updated.Contains(newSha) && !updated.Contains(oldSha) && updated.Contains("管理者メモ"), "SHA or notes corrupted");
+        Check(!LocalTaskWorkspace.TryUpdateSubmissionBody("unowned PR", newSha, out _), "Foreign PR adopted");
+        Check(!LocalTaskWorkspace.TryUpdateSubmissionBody(body + body, newSha, out _), "Duplicate marker accepted");
         return Task.CompletedTask;
     }
 
-    private static Task DeploymentProjectionDisablesAutoMergeAsync()
+    private static async Task AssetPolicyAsync()
     {
-        var attempt = BuildAttempt.Start(
-            "build-1",
-            "fixed-sha",
-            "wrld_test",
-            "Windows",
-            "builder-a",
-            DateTimeOffset.UtcNow);
-        var projection = DeploymentProjectionRequest.Create(new OperationId("deploy-op"), "owner/repo", attempt);
-        False(projection.AutoMerge, "GitHub Deployment auto_merge must be false.");
-        Equal("fixed-sha", projection.BuildTargetSha, "Deployment must target the fixed SHA.");
-        return Task.CompletedTask;
-    }
-
-    private static Task GitPolicyRejectsForbiddenCommandsAsync()
-    {
-        var operationId = new OperationId("git-policy");
-        False(GitCommandPolicy.Validate(["reset", "--hard", "HEAD"], operationId).IsSuccess, "reset must be rejected.");
-        False(GitCommandPolicy.Validate(["stash", "push"], operationId).IsSuccess, "stash must be rejected.");
-        False(GitCommandPolicy.Validate(["push", "--force", "origin", "task"], operationId).IsSuccess, "force push must be rejected.");
-        False(GitCommandPolicy.Validate(["clean", "-fd"], operationId).IsSuccess, "automatic deletion must be rejected.");
-        True(GitCommandPolicy.Validate(["push", "origin", "task/task-1"], operationId).IsSuccess, "Normal Task push should pass policy.");
-        return Task.CompletedTask;
-    }
-
-    private static async Task FileJournalPersistsAsync()
-    {
-        var directory = Path.Combine(Path.GetTempPath(), "projectsync-tests", Guid.NewGuid().ToString("N"));
-        try
+        using var fixture = new LocalGitFixture();
+        fixture.Git("switch", "-c", "task/asset-policy");
+        var gateway = new GitCliTaskGateway(fixture.Working);
+        var largePath = Path.Combine(fixture.Working, "Assets", "Large.fbx");
+        using (var file = new FileStream(largePath, FileMode.CreateNew, FileAccess.Write))
         {
-            var operationId = new OperationId("persistent-op");
-            using (var first = new FileOperationJournal(directory))
+            file.SetLength(101L * 1024 * 1024);
+        }
+
+        var large = await gateway.CreateSnapshotAsync("task/asset-policy", "test", new OperationId("large"), default);
+        Check(!large.IsSuccess && large.Problem!.ErrorCode == "large_asset_not_lfs", "Large ordinary asset accepted");
+        File.Delete(largePath);
+        File.WriteAllText(Path.Combine(fixture.Working, "Assets", "Main.unity"), "%YAML 1.1\n");
+        File.WriteAllText(Path.Combine(fixture.Working, ".gitattributes"), "*.unity filter=lfs diff=lfs merge=lfs -text\n");
+        var scene = await gateway.CreateSnapshotAsync("task/asset-policy", "test", new OperationId("scene"), default);
+        Check(!scene.IsSuccess && scene.Problem!.ErrorCode == "scene_lfs_conflicts_with_merge", "LFS Scene accepted");
+        Check(fixture.Git("rev-parse", "HEAD").Trim() == fixture.MainSha, "Rejected content committed");
+    }
+
+    private static void Check(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private sealed class LocalGitFixture : IDisposable
+    {
+        public string Root { get; } = Path.Combine(Path.GetTempPath(), "projectsync-tests", Guid.NewGuid().ToString("N"));
+        public string Remote => Path.Combine(Root, "remote.git");
+        public string Working => Path.Combine(Root, "working");
+        public string MainSha { get; }
+
+        public LocalGitFixture()
+        {
+            Directory.CreateDirectory(Root);
+            RunGit(Root, "init", "--bare", Remote);
+            RunGit(Root, "init", "-b", "main", Working);
+            Git("config", "user.name", "ProjectSync Test");
+            Git("config", "user.email", "test@example.invalid");
+            Directory.CreateDirectory(Path.Combine(Working, "Assets"));
+            Directory.CreateDirectory(Path.Combine(Working, "Packages"));
+            Directory.CreateDirectory(Path.Combine(Working, "ProjectSettings"));
+            File.WriteAllText(Path.Combine(Working, "Assets", "sample.txt"), "baseline");
+            File.WriteAllText(Path.Combine(Working, "Packages", "manifest.json"), "{}");
+            File.WriteAllText(Path.Combine(Working, "ProjectSettings", "ProjectVersion.txt"), "m_EditorVersion: test");
+            File.WriteAllText(Path.Combine(Working, ".gitattributes"), "*.unity text eol=lf\n");
+            File.WriteAllText(Path.Combine(Working, ".gitignore"), "/UserSettings/\n/Assets.zip\n");
+            Git("add", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore");
+            Git("commit", "-m", "baseline");
+            Git("remote", "add", "origin", Remote);
+            Git("push", "origin", "main");
+            MainSha = Git("rev-parse", "HEAD").Trim();
+        }
+
+        public string Git(params string[] args) => RunGit(Working, args);
+        public string RemoteSha(string branch) => Git("ls-remote", "--heads", "origin", "refs/heads/" + branch).Split('\t')[0];
+
+        public void Dispose()
+        {
+            var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "projectsync-tests"));
+            var path = Path.GetFullPath(Root);
+            if (!path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Fixture outside allowed test root");
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+            Directory.Delete(path, recursive: true);
+        }
+
+        private static string RunGit(string directory, params string[] args)
+        {
+            var info = new ProcessStartInfo("git")
             {
-                var checkpoint = await first.LoadOrCreateAsync(
-                    OperationCheckpoint.Create(operationId, "test", "subject"),
-                    default).ConfigureAwait(false);
-                await first.SaveAsync(
-                    checkpoint.Advance("commit_created", values: [("commitSha", "abc123")]),
-                    default).ConfigureAwait(false);
-            }
-
-            using var reloaded = new FileOperationJournal(directory);
-            var restored = await reloaded.LoadOrCreateAsync(
-                OperationCheckpoint.Create(operationId, "test", "subject"),
-                default).ConfigureAwait(false);
-            Equal("commit_created", restored.Phase, "Journal phase must survive memory loss.");
-            Equal("abc123", restored.Data["commitSha"], "Journal data must survive memory loss.");
-        }
-        finally
-        {
-            if (Directory.Exists(directory))
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-        }
-    }
-
-    private static CoordinationAggregate CreateActiveAggregate(string taskId, string lockId, string scenePath) =>
-        new(
-            taskId,
-            Revision: 1,
-            Generation: 1,
-            TaskLifecycle.Active,
-            CoordinationHealth.Healthy,
-            BaseMainSha: "base-main",
-            TaskBranch: "task/" + taskId,
-            StartClaim: null,
-            ActiveSession: new SessionFence("same-user", "device-a", "session-a", 1, lockId, scenePath),
-            RecoveryReason: null,
-            LastOperationId: "seed");
-
-    private static SessionAuthorityRequest AuthorityFor(CoordinationAggregate aggregate)
-    {
-        var session = aggregate.ActiveSession!;
-        return new SessionAuthorityRequest(
-            aggregate.TaskId,
-            session.GitHubUser,
-            session.DeviceId,
-            session.SessionId,
-            session.Generation,
-            session.LfsLockId,
-            session.ScenePath);
-    }
-
-    private static async Task SeedAsync(InMemoryCoordinationStateStore store, CoordinationAggregate aggregate)
-    {
-        var result = await store.CompareExchangeAsync(
-            aggregate.TaskId,
-            expectedRevision: 0,
-            aggregate,
-            default).ConfigureAwait(false);
-        Equal(CasWriteStatus.Written, result.Status, "Fixture seed must be written.");
-    }
-
-    private static void True(bool value, string message)
-    {
-        if (!value)
-        {
-            throw new InvalidOperationException(message);
-        }
-    }
-
-    private static void False(bool value, string message) => True(!value, message);
-
-    private static void NotNull(object? value, string message) => True(value is not null, message);
-
-    private static void Equal<T>(T expected, T actual, string message)
-    {
-        if (!EqualityComparer<T>.Default.Equals(expected, actual))
-        {
-            throw new InvalidOperationException($"{message} Expected: {expected}; actual: {actual}.");
-        }
-    }
-
-    private sealed class StartFixture
-    {
-        public StartFixture()
-        {
-            Workflow = new StartSceneTaskWorkflow(State, Journal, Issues, Locks);
-        }
-
-        public InMemoryCoordinationStateStore State { get; } = new();
-        public InMemoryOperationJournal Journal { get; } = new();
-        public FakeIssueGateway Issues { get; } = new();
-        public FakeLfsLockGateway Locks { get; } = new();
-        public StartSceneTaskWorkflow Workflow { get; }
-
-        public StartSceneTaskRequest CreateRequest(string deviceId, string sessionId, string operationId) =>
-            new(
-                "task-100",
-                "base-main",
-                "task/task-100",
-                "Assets/Scenes/Main.unity",
-                "same-user",
-                deviceId,
-                sessionId,
-                new OperationId(operationId));
-    }
-
-    private sealed class FakeIssueGateway : ITaskIssueGateway
-    {
-        private readonly object _gate = new();
-        private readonly Dictionary<string, IssueReference> _issues = new(StringComparer.Ordinal);
-
-        public int UniqueIssueCount
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _issues.Count;
-                }
-            }
-        }
-
-        public Task<Outcome<IssueReference>> EnsureTaskIssueAsync(
-            string taskId,
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (_gate)
-            {
-                if (!_issues.TryGetValue(taskId, out var issue))
-                {
-                    issue = new IssueReference(_issues.Count + 1, "https://example.invalid/issues/" + (_issues.Count + 1));
-                    _issues[taskId] = issue;
-                }
-
-                return Task.FromResult(Outcome<IssueReference>.Success(issue));
-            }
-        }
-    }
-
-    private sealed class FakeLfsLockGateway : ILfsLockGateway
-    {
-        private readonly object _gate = new();
-        private readonly Dictionary<string, LfsLockReference> _locks = new(StringComparer.Ordinal);
-        public bool FailAcquire { get; set; }
-        public bool FailRelease { get; set; }
-        public int AcquireSuccessCount { get; private set; }
-
-        public int LockCount
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _locks.Count;
-                }
-            }
-        }
-
-        public void Seed(LfsLockReference lockReference)
-        {
-            lock (_gate)
-            {
-                _locks[lockReference.Path] = lockReference;
-            }
-        }
-
-        public Task<Outcome<LfsLockReference>> AcquireAsync(
-            string path,
-            string githubUser,
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (_gate)
-            {
-                if (FailAcquire)
-                {
-                    return Task.FromResult(Outcome<LfsLockReference>.Failure(Problem.Create(
-                        "lfs_lock_failed",
-                        ProblemCategory.ExternalSystem,
-                        retryable: true,
-                        operationId,
-                        "lfs_lock",
-                        "Injected lock failure.")));
-                }
-
-                if (_locks.TryGetValue(path, out var existing))
-                {
-                    return Task.FromResult(Outcome<LfsLockReference>.Failure(Problem.Create(
-                        "lfs_lock_held",
-                        ProblemCategory.Conflict,
-                        retryable: false,
-                        operationId,
-                        "lfs_lock",
-                        "Path is already locked by " + existing.Owner + ".")));
-                }
-
-                var created = new LfsLockReference("lock-" + (_locks.Count + 1), path, githubUser);
-                _locks[path] = created;
-                AcquireSuccessCount++;
-                return Task.FromResult(Outcome<LfsLockReference>.Success(created));
-            }
-        }
-
-        public Task<Outcome<Unit>> ReleaseAsync(
-            string lockId,
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (_gate)
-            {
-                if (FailRelease)
-                {
-                    return Task.FromResult(Outcome<Unit>.Failure(Problem.Create(
-                        "lfs_unlock_failed",
-                        ProblemCategory.ExternalSystem,
-                        retryable: true,
-                        operationId,
-                        "lfs_unlock",
-                        "Injected unlock failure.")));
-                }
-
-                var pair = _locks.FirstOrDefault(candidate => string.Equals(candidate.Value.LockId, lockId, StringComparison.Ordinal));
-                if (!string.IsNullOrEmpty(pair.Key))
-                {
-                    _locks.Remove(pair.Key);
-                }
-
-                return Task.FromResult(Outcome<Unit>.Success(Unit.Value));
-            }
-        }
-
-        public Task<Outcome<bool>> VerifyUnlockedAsync(string path, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (_gate)
-            {
-                return Task.FromResult(Outcome<bool>.Success(!_locks.ContainsKey(path)));
-            }
-        }
-    }
-
-    private sealed class FakeUnitySaveGateway : IUnitySaveGateway
-    {
-        public int SaveCalls { get; private set; }
-
-        public Task<Outcome<UnitySaveReceipt>> SaveOpenScenesAndAssetsAsync(
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            SaveCalls++;
-            return Task.FromResult(Outcome<UnitySaveReceipt>.Success(
-                new UnitySaveReceipt(DateTimeOffset.UtcNow, ["Assets/Scenes/Main.unity"])));
-        }
-    }
-
-    private sealed class FakeGitTaskGateway : IGitTaskGateway
-    {
-        public bool FailPush { get; set; }
-        public bool RemoteReachable { get; set; }
-        public int CommitCalls { get; private set; }
-        public int PushCalls { get; private set; }
-
-        public Task<Outcome<string>> CreateSnapshotAsync(
-            string taskBranch,
-            string message,
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            CommitCalls++;
-            return Task.FromResult(Outcome<string>.Success("commit-" + CommitCalls));
-        }
-
-        public Task<Outcome<Unit>> PushCommitAsync(
-            string taskBranch,
-            string commitSha,
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            PushCalls++;
-            return Task.FromResult(FailPush
-                ? Outcome<Unit>.Failure(Problem.Create(
-                    "push_failed",
-                    ProblemCategory.Transport,
-                    retryable: true,
-                    operationId,
-                    "push",
-                    "Injected push failure."))
-                : Outcome<Unit>.Success(Unit.Value));
-        }
-
-        public Task<Outcome<bool>> IsCommitReachableAsync(
-            string taskBranch,
-            string commitSha,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(Outcome<bool>.Success(RemoteReachable));
-        }
-    }
-
-    private sealed class FakeLocalDataProtector : ILocalDataProtector
-    {
-        public int Calls { get; private set; }
-
-        public Task<Outcome<LocalPreservationReceipt>> InspectAndPreserveAsync(
-            string taskId,
-            OperationId operationId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Calls++;
-            return Task.FromResult(Outcome<LocalPreservationReceipt>.Success(
-                new LocalPreservationReceipt(true, "evidence/" + taskId, DateTimeOffset.UtcNow)));
+                WorkingDirectory = directory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            foreach (var arg in args) info.ArgumentList.Add(arg);
+            using var process = Process.Start(info) ?? throw new InvalidOperationException("Git did not start");
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {error}");
+            return output;
         }
     }
 }

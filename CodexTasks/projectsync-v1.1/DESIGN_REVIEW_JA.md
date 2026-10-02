@@ -1,5 +1,7 @@
 # ProjectSync v1.1 実装構成案・確認事項
 
+> 実装前に作成した設計資料です。現在の実装・検証状態とPrivate＋Freeの例外は `IMPLEMENTATION_STATUS.md` と `PRIVATE_FREE_PILOT_EXCEPTION.md` を参照してください。以下の「Git未初期化」等は設計時点の記録です。
+
 ## 現在の判定
 
 `REDIRECT TO RISK FIRST POC — PRODUCTION UNCHANGED`
