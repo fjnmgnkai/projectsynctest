@@ -31,6 +31,15 @@ The first behavioral slice and a local Git Task-save adapter are implemented. Re
 | Deployment | No production remote, Unity build, VRChat upload, or deployment operation was executed in this slice. |
 | Evidence | Core/domain tests, real temporary local Git remote, remote-main SHA comparison, non-fast-forward rejection, .NET build. GitHub/Unity GUI end-to-end remains pending. |
 
+## Portable Windows preview slice
+
+- Gate / mode / risk: `PROCEED` / `FEATURE` / `RISK-MEDIUM` for distributing an unsigned diagnostic executable, with production mutations still disabled.
+- Behavior: when a user extracts the Windows x64 ZIP on another PC and starts the EXE, the desktop opens without a separately installed .NET runtime, allows selecting a Unity project root, and keeps Task actions disabled.
+- Authority and trust: the selected path is local UI state only; no remote Task, Session, or GitHub authority is inferred from it. The package includes no Unity project, Git credentials, or App secret.
+- Side effects: build output, ZIP, checksum, and single-file runtime extraction only. No GitHub, Unity Scene, VRChat Build/Upload, or deployment mutation is performed by packaging.
+- Concurrency / recovery: no shared state is modified; packaging requires a clean Git source tree and records its exact commit SHA. A failed package attempt does not change source or remote state.
+- Required evidence: .NET Release publish, ZIP inventory, checksum verification, and startup smoke test from the packaged EXE. Actual launch on a second Windows PC remains manual qualification.
+
 ## Implemented evidence
 
 - Static: Core, Infrastructure, specification tests, and WPF desktop compile with zero warnings/errors.

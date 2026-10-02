@@ -31,7 +31,11 @@
                 CornerRadius="8">
             <StackPanel>
                 <TextBlock FontWeight="SemiBold" Text="ワークスペース" />
-                <TextBlock Margin="0,6,0,0" Text="{Binding ProjectPath}" TextWrapping="Wrap" />
+                <TextBlock Margin="0,6,0,0" Text="{Binding ProjectPathDisplay}" TextWrapping="Wrap" />
+                <Button Content="Unityプロジェクトを選択"
+                        Click="SelectProject_Click"
+                        HorizontalAlignment="Left"
+                        Margin="0,10,0,0" />
                 <TextBlock Margin="0,8,0,0"
                            FontWeight="SemiBold"
                            Foreground="{Binding StatusBrush}"

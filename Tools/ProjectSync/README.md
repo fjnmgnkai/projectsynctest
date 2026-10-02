@@ -35,3 +35,7 @@ dotnet run --project .\tests\ProjectSync.SpecTests\ProjectSync.SpecTests.csproj
 ```
 
 The current machine has .NET 8 SDK. The production framework target must be reviewed before release because the design candidate was .NET 10 LTS; no SDK was installed automatically.
+
+## Portable Windows preview
+
+After committing source changes, run `packaging/New-PortablePackage.ps1` from PowerShell to produce a self-contained Windows x64 ZIP and SHA-256 file in `dist/`. The archive contains the desktop executable and Japanese usage/safety notes, not the Unity project or credentials. On another PC, extract it, launch the EXE, and select a Unity project folder. Task actions remain disabled until the trusted production gateways are completed.

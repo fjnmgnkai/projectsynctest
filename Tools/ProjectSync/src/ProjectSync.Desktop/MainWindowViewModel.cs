@@ -9,20 +9,30 @@ namespace ProjectSync.Desktop;
 
 public sealed class MainWindowViewModel : INotifyPropertyChanged
 {
+    private string _projectPath = string.Empty;
     private string _statusText = string.Empty;
     private string _diagnosticText = string.Empty;
     private Brush _statusBrush = Brushes.DarkRed;
 
     public MainWindowViewModel(string projectPath)
     {
-        ProjectPath = Path.GetFullPath(projectPath);
         RefreshCommand = new RelayCommand(Refresh);
-        Refresh();
+        SelectProject(projectPath);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public string ProjectPath { get; }
+    public string ProjectPath
+    {
+        get => _projectPath;
+        private set
+        {
+            SetField(ref _projectPath, value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProjectPathDisplay)));
+        }
+    }
+
+    public string ProjectPathDisplay => string.IsNullOrEmpty(ProjectPath) ? "未選択" : ProjectPath;
 
     public string StatusText
     {
@@ -48,15 +58,39 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public bool CanSubmitTask => false;
     public ICommand RefreshCommand { get; }
 
+    public void SelectProject(string? projectPath)
+    {
+        try
+        {
+            ProjectPath = string.IsNullOrWhiteSpace(projectPath)
+                ? string.Empty
+                : Path.GetFullPath(projectPath);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            ProjectPath = string.Empty;
+        }
+
+        Refresh();
+    }
+
     private void Refresh()
     {
-        var hasUnityShape = Directory.Exists(Path.Combine(ProjectPath, "Assets")) &&
+        var hasProjectPath = !string.IsNullOrEmpty(ProjectPath);
+        var hasUnityShape = hasProjectPath &&
+                            Directory.Exists(Path.Combine(ProjectPath, "Assets")) &&
                             Directory.Exists(Path.Combine(ProjectPath, "Packages")) &&
                             Directory.Exists(Path.Combine(ProjectPath, "ProjectSettings"));
-        var hasGit = Directory.Exists(Path.Combine(ProjectPath, ".git"));
-        var pipeName = UnityBridgeProtocol.CreatePipeName(ProjectPath);
+        var gitPath = hasProjectPath ? Path.Combine(ProjectPath, ".git") : string.Empty;
+        var hasGit = hasProjectPath && (Directory.Exists(gitPath) || File.Exists(gitPath));
+        var pipeName = hasProjectPath ? UnityBridgeProtocol.CreatePipeName(ProjectPath) : "未選択";
 
-        if (!hasUnityShape)
+        if (!hasProjectPath)
+        {
+            StatusText = "Unityプロジェクトを選択してください。作業操作はまだ無効です。";
+            StatusBrush = Brushes.DarkOrange;
+        }
+        else if (!hasUnityShape)
         {
             StatusText = "このパスはUnityプロジェクトとして認識できません。";
             StatusBrush = Brushes.DarkRed;
