@@ -55,8 +55,26 @@ public sealed class GitCliTaskGateway : IGitTaskGateway
             return head;
         }
 
+        if (!File.Exists(Path.Combine(_repositoryPath, ".gitattributes")) ||
+            !File.Exists(Path.Combine(_repositoryPath, ".gitignore")))
+        {
+            return Failure<string>(
+                "project_git_configuration_missing",
+                ProblemCategory.Configuration,
+                operationId,
+                "snapshot_preflight",
+                "Project root needs .gitattributes and .gitignore before ProjectSync can save safely.");
+        }
+
+        var assets = await GitAssetPolicy.ValidateAsync(
+            _repositoryPath, _runner, _timeout, operationId, cancellationToken).ConfigureAwait(false);
+        if (!assets.IsSuccess)
+        {
+            return Outcome<string>.Failure(assets.Problem!);
+        }
+
         var status = await RunRequiredAsync(
-            ["status", "--porcelain=v1", "--untracked-files=all"],
+            ["status", "--porcelain=v1", "--untracked-files=all", "--", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore"],
             operationId,
             "snapshot_status",
             cancellationToken).ConfigureAwait(false);
@@ -70,14 +88,19 @@ public sealed class GitCliTaskGateway : IGitTaskGateway
             return head;
         }
 
-        var stage = await RunRequiredAsync(["add", "-A"], operationId, "snapshot_stage", cancellationToken).ConfigureAwait(false);
+        var stage = await RunRequiredAsync(
+            ["add", "-A", "--", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore"],
+            operationId,
+            "snapshot_stage",
+            cancellationToken).ConfigureAwait(false);
         if (!stage.IsSuccess)
         {
             return Outcome<string>.Failure(stage.Problem!);
         }
 
         var commit = await RunRequiredAsync(
-            ["commit", "-m", message, "-m", $"ProjectSync-Operation-Id: {operationId.Value}"],
+            ["commit", "-m", message, "-m", $"ProjectSync-Operation-Id: {operationId.Value}",
+                "--only", "--", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore"],
             operationId,
             "snapshot_commit",
             cancellationToken).ConfigureAwait(false);

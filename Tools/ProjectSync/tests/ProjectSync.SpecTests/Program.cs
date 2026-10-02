@@ -21,6 +21,8 @@ internal static class Program
         ("save refuses a branch that differs from coordination state", SaveBranchMismatchHasNoEffectsAsync),
         ("save branch binding survives journal reload", SaveBranchBindingSurvivesReloadAsync),
         ("real Git Task snapshot and push leave main unchanged", GitCliTaskGatewayKeepsMainReadOnlyAsync),
+        ("local-first Task save retries the same commit after remote failure", LocalFirstSaveRecoversAsync),
+        ("large ordinary assets and LFS Scenes are rejected before commit", AssetPolicyRejectsUnsafeTrackingAsync),
         ("operation journal survives process-memory loss", FileJournalPersistsAsync)
     ];
 
@@ -321,14 +323,21 @@ internal static class Program
             RunGit(directory, "init", "-b", "main", working);
             RunGit(working, "config", "user.name", "ProjectSync Test");
             RunGit(working, "config", "user.email", "test@example.invalid");
-            File.WriteAllText(Path.Combine(working, "sample.txt"), "baseline");
-            RunGit(working, "add", "sample.txt");
+            Directory.CreateDirectory(Path.Combine(working, "Assets"));
+            Directory.CreateDirectory(Path.Combine(working, "Packages"));
+            Directory.CreateDirectory(Path.Combine(working, "ProjectSettings"));
+            File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "baseline");
+            File.WriteAllText(Path.Combine(working, "Packages", "manifest.json"), "{}");
+            File.WriteAllText(Path.Combine(working, "ProjectSettings", "ProjectVersion.txt"), "m_EditorVersion: test");
+            File.WriteAllText(Path.Combine(working, ".gitattributes"), "*.unity text eol=lf\n");
+            File.WriteAllText(Path.Combine(working, ".gitignore"), "/UserSettings/\n/Assets.zip\n");
+            RunGit(working, "add", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore");
             RunGit(working, "commit", "-m", "baseline");
             RunGit(working, "remote", "add", "origin", remote);
             RunGit(working, "push", "origin", "main");
             var mainSha = RunGit(working, "rev-parse", "HEAD").Trim();
             RunGit(working, "switch", "-c", "task/test-save");
-            File.WriteAllText(Path.Combine(working, "sample.txt"), "Task change");
+            File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "Task change");
 
             var operationId = new OperationId("real-git-save");
             var gateway = new GitCliTaskGateway(working);
@@ -353,8 +362,8 @@ internal static class Program
             Equal(mainSha, mainRemote, "Remote main must remain at its original SHA.");
             Equal(snapshot.Value, taskRemote, "Only the Task ref should receive the snapshot.");
 
-            File.WriteAllText(Path.Combine(working, "later.txt"), "later Task work");
-            RunGit(working, "add", "later.txt");
+            File.WriteAllText(Path.Combine(working, "Assets", "later.txt"), "later Task work");
+            RunGit(working, "add", "Assets/later.txt");
             RunGit(working, "commit", "-m", "later Task commit");
             RunGit(working, "push", "origin", "task/test-save");
             var laterSha = RunGit(working, "rev-parse", "HEAD").Trim();
@@ -377,7 +386,7 @@ internal static class Program
                 "Forbidden requests must not mutate remote main.");
 
             RunGit(working, "switch", "main");
-            File.WriteAllText(Path.Combine(working, "sample.txt"), "must not save on main");
+            File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "must not save on main");
             var wrongCheckout = await gateway.CreateSnapshotAsync(
                 "task/test-save", "must fail", new OperationId("wrong-checkout"), default).ConfigureAwait(false);
             False(wrongCheckout.IsSuccess, "Snapshot must fail when main is checked out.");
@@ -391,6 +400,152 @@ internal static class Program
             }
 
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task LocalFirstSaveRecoversAsync()
+    {
+        var (directory, remote, working, mainSha) = CreateLocalFixture();
+        try
+        {
+            var workspace = new LocalTaskWorkspace(working, unityEditorRunning: () => false);
+            var started = await workspace.StartAsync("Scene work").ConfigureAwait(false);
+            True(started.IsSuccess, "Task must start from remote main: " + started.Problem?.Message);
+            Equal(mainSha, RunGit(working, "rev-parse", "HEAD").Trim(), "A new Task must start at remote main HEAD.");
+            True(started.Value!.StartsWith("task/", StringComparison.Ordinal), "A Task branch is required.");
+
+            File.WriteAllText(Path.Combine(working, "Assets.zip"), "local backup; never stage");
+            RunGit(working, "add", "-f", "Assets.zip");
+            File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "first Task edit");
+            var first = await workspace.SaveAsync().ConfigureAwait(false);
+            True(first.IsSuccess, "First Task save must reach the remote: " + first.Problem?.Message);
+            Equal(string.Empty, RunGit(working, "ls-tree", "-r", "--name-only", "HEAD", "Assets.zip").Trim(),
+                "Even a previously staged root backup ZIP must never enter a Task snapshot.");
+            True(File.Exists(Path.Combine(working, "Assets.zip")), "The excluded backup must remain on disk.");
+            RunGit(working, "rm", "--cached", "--", "Assets.zip");
+            Equal(mainSha, RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/main").Split('\t')[0],
+                "Save must leave remote main unchanged.");
+
+            File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "second Task edit");
+            RunGit(working, "remote", "set-url", "origin", Path.Combine(directory, "unavailable.git"));
+            var failed = await workspace.SaveAsync().ConfigureAwait(false);
+            False(failed.IsSuccess, "Unavailable remote must not be reported as saved.");
+            var committedSha = RunGit(working, "rev-parse", "HEAD").Trim();
+            False(string.Equals(committedSha, first.Value!.CommitSha, StringComparison.Ordinal),
+                "The second local snapshot must survive a failed push.");
+
+            RunGit(working, "remote", "set-url", "origin", remote);
+            var restored = new LocalTaskWorkspace(working, unityEditorRunning: () => false);
+            var retried = await restored.SaveAsync().ConfigureAwait(false);
+            True(retried.IsSuccess, "Restarted workspace must retry the push: " + retried.Problem?.Message);
+            Equal(committedSha, retried.Value!.CommitSha, "Retry must not create a new commit.");
+            Equal("2", RunGit(working, "rev-list", "--count", "main..HEAD").Trim(),
+                "Two edits must make exactly two Task commits.");
+            Equal(committedSha,
+                RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/" + started.Value).Split('\t')[0],
+                "The remote Task branch must reach the retried commit.");
+            Equal(mainSha, RunGit(working, "ls-remote", "--heads", "origin", "refs/heads/main").Split('\t')[0],
+                "Retry must still leave main untouched.");
+
+            var submitted = await restored.SubmitAsync("Scene work").ConfigureAwait(false);
+            False(submitted.IsSuccess, "A non-GitHub fixture must not create a PR.");
+            Equal("github_origin_required", submitted.Problem!.ErrorCode,
+                "Submission must validate its GitHub origin.");
+
+            var next = await restored.StartAsync("Next task").ConfigureAwait(false);
+            True(next.IsSuccess, "A clean finished Task may start another Task.");
+            Equal(mainSha, RunGit(working, "rev-parse", "HEAD").Trim(),
+                "New Task must use main, not the previous Task HEAD.");
+            var resumed = await restored.ResumeAsync(started.Value).ConfigureAwait(false);
+            True(resumed.IsSuccess, "An existing local Task can be resumed.");
+            Equal(committedSha, RunGit(working, "rev-parse", "HEAD").Trim(),
+                "Resuming a Task must restore its own commit without merging main.");
+        }
+        finally
+        {
+            DeleteLocalFixture(directory);
+        }
+    }
+
+    private static async Task AssetPolicyRejectsUnsafeTrackingAsync()
+    {
+        var (directory, _, working, mainSha) = CreateLocalFixture();
+        try
+        {
+            RunGit(working, "switch", "-c", "task/asset-policy");
+            var largePath = Path.Combine(working, "Assets", "Large.fbx");
+            using (var large = new FileStream(largePath, FileMode.CreateNew, FileAccess.Write))
+            {
+                large.SetLength(101L * 1024 * 1024);
+            }
+
+            var gateway = new GitCliTaskGateway(working);
+            var rejected = await gateway.CreateSnapshotAsync(
+                "task/asset-policy", "large asset", new OperationId("large-asset"), default)
+                .ConfigureAwait(false);
+            False(rejected.IsSuccess, "An ordinary Git file over 100 MiB must be rejected before commit.");
+            Equal("large_asset_not_lfs", rejected.Problem!.ErrorCode, "The error must identify LFS setup.");
+            Equal(mainSha, RunGit(working, "rev-parse", "HEAD").Trim(), "Rejected save must preserve HEAD.");
+
+            File.Delete(largePath);
+            File.WriteAllText(Path.Combine(working, "Assets", "Main.unity"), "%YAML 1.1\n");
+            File.WriteAllText(Path.Combine(working, ".gitattributes"), "*.unity filter=lfs diff=lfs merge=lfs -text\n");
+            var sceneRejected = await gateway.CreateSnapshotAsync(
+                "task/asset-policy", "scene", new OperationId("scene-lfs"), default)
+                .ConfigureAwait(false);
+            False(sceneRejected.IsSuccess, "An LFS Scene must be rejected for concurrent editing.");
+            Equal("scene_lfs_conflicts_with_merge", sceneRejected.Problem!.ErrorCode,
+                "The conflict with text merging must be explicit.");
+            Equal(mainSha, RunGit(working, "rev-parse", "HEAD").Trim(), "Rejected Scene must preserve HEAD.");
+        }
+        finally
+        {
+            DeleteLocalFixture(directory);
+        }
+    }
+
+    private static (string Directory, string Remote, string Working, string MainSha) CreateLocalFixture()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "projectsync-tests", Guid.NewGuid().ToString("N"));
+        var remote = Path.Combine(directory, "remote.git");
+        var working = Path.Combine(directory, "working");
+        Directory.CreateDirectory(directory);
+        RunGit(directory, "init", "--bare", remote);
+        RunGit(directory, "init", "-b", "main", working);
+        RunGit(working, "config", "user.name", "ProjectSync Test");
+        RunGit(working, "config", "user.email", "test@example.invalid");
+        Directory.CreateDirectory(Path.Combine(working, "Assets"));
+        Directory.CreateDirectory(Path.Combine(working, "Packages"));
+        Directory.CreateDirectory(Path.Combine(working, "ProjectSettings"));
+        File.WriteAllText(Path.Combine(working, "Assets", "sample.txt"), "main baseline");
+        File.WriteAllText(Path.Combine(working, "Packages", "manifest.json"), "{}");
+        File.WriteAllText(Path.Combine(working, "ProjectSettings", "ProjectVersion.txt"), "m_EditorVersion: test");
+        File.WriteAllText(Path.Combine(working, ".gitattributes"), "*.unity text eol=lf\n");
+        File.WriteAllText(Path.Combine(working, ".gitignore"), "/UserSettings/\n/Assets.zip\n");
+        RunGit(working, "add", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore");
+        RunGit(working, "commit", "-m", "main baseline");
+        RunGit(working, "remote", "add", "origin", remote);
+        RunGit(working, "push", "origin", "main");
+        return (directory, remote, working, RunGit(working, "rev-parse", "HEAD").Trim());
+    }
+
+    private static void DeleteLocalFixture(string directory)
+    {
+        var fixtureRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "projectsync-tests"));
+        var target = Path.GetFullPath(directory);
+        if (!target.StartsWith(fixtureRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Refusing to remove a path outside the test fixture root.");
+        }
+
+        if (Directory.Exists(target))
+        {
+            foreach (var file in Directory.EnumerateFiles(target, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+            }
+
+            Directory.Delete(target, recursive: true);
         }
     }
 

@@ -1,13 +1,25 @@
-# ProjectSync Windows x64 ポータブル版（開発プレビュー）
+# ProjectSync Windows x64 ポータブル版（ローカル主体の試験版）
 
-このZIPを任意のフォルダーへ展開し、`ProjectSync/ProjectSync.Desktop.exe` を起動してください。インストーラーと管理者権限は不要です。Windows x64向けの自己完結型ビルドなので、別途.NET 8ランタイムをインストールする必要はありません。
+ZIPを展開し、`ProjectSync/ProjectSync.Desktop.exe`を起動してください。.NETランタイムの別途インストールは不要です。Unity Project、Git認証情報、GitHub App秘密鍵はZIPに含まれません。この版はコード署名されていません。
 
-起動後、「Unityプロジェクトを選択」で対象フォルダーを指定します。現在は `fjnmgnkai/projectsynctest` のCloneを想定しています。`Assets`、`Packages`、`ProjectSettings` を含むUnityプロジェクトのルートを選んでください。コマンドラインからは `ProjectSync.Desktop.exe --project "C:\path\to\UnityProject"` も使用できます。ZIP自体にUnityプロジェクト、Git認証情報、GitHub App秘密鍵は含まれません。
+## 初回準備
 
-## 現在の制限
+1. このPCにGit、Git LFS、GitHub CLI (`gh`)を用意します。各ユーザーは自分のGitHubアカウントでGitのPushと`gh auth login`を設定します。
+2. `Assets`、`Packages`、`ProjectSettings`、`.git`を持つUnity ProjectのCloneを選択します。`--project "C:\path\to\UnityProject"`でも指定できます。
+3. 管理者はSceneを通常GitのYAMLにし、100 MiB超の共有素材を個別にLFS追跡します。バックアップZIPは選択Projectの`.gitignore`で除外してください。例: `/Assets.zip`。
+4. GitHubでLFSの追加課金を避ける場合、Repository所有者のLFS予算を$0にします。ProjectSyncはGitHubの請求設定を変更しません。
 
-これは起動と状態表示を確認するための開発プレビューです。選択先のGitHub remote一致もまだ確認しません。協調状態、GitHub連携、Unity Bridgeの実運用経路がまだ接続されていないため、「新しい作業」「作業を再開」「作業を保存」「変更を提出」は無効です。別PCへコピーしても共同制作フローが有効になるわけではありません。VRChat Build/Uploadやmain統合もできません。
+## 日常操作
 
-Private＋GitHub Freeでは、GitHub側のmain保護を強制できません。小規模チームの試験運用例外は記録されていますが、仕様書v1.1のGitHub品質Gateを満たした状態ではありません。
+- 新しい作業: Unityを閉じ、ローカル変更がない状態で作業名を入力して押します。最新remote `main`から短命Task Branchを作ります。
+- 作業を再開: 再開したいローカルTask Branchを指定して押します。Branchを切り替える場合はUnityを閉じ、ローカル変更をなくしてください。
+- 作業を保存: Unityが開いていればScene/Assetを保存し、Task BranchへCommit・Pushして到達を確認します。通信失敗時はCommitを残すので、同じボタンで再試行します。
+- 変更を提出: 保存後に押すとPRを作り、本文にSubmitted Commit SHAを記録します。管理者はそのSHAとPR HEADを確認してから統合してください。
 
-このプレビューはコード署名されていません。入手元と同梱の `BUILD-INFO.txt`、ZIPと同じ場所の `.sha256` を確認してから実行してください。チェックサム例: `Get-FileHash .\ProjectSync-preview-win-x64-*.zip -Algorithm SHA256`。
+ProjectSyncは`main`へCommit/Push/Mergeしません。ルートの`Assets.zip`はProjectSyncのCommit対象にしません。GitHub Actionsと常時稼働サーバーは使いません。
+
+## 試験版としての限界
+
+実GitHub PR作成、Unity Editor経由の保存、複数PCでの終端間試験はまだ完了していません。Private + GitHub FreeではGitHub側の強制品質Gateを作れないため、管理者による確認が必要です。既存PRのSubmitted SHAとHEADが変わった場合、自動再提出せず停止します。Build/Upload/Publishも未接続です。本番確認済みと誤認しないでください。
+
+ZIPのSHA-256を隣の`.sha256`ファイルと照合し、`BUILD-INFO.txt`でソースCommitを確認してください。

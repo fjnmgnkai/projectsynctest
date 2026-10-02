@@ -1,5 +1,5 @@
-# ProjectSync Main Scene lock target. Do not broaden this to every Scene implicitly.
-Assets/Scenes/VRCDefaultWorldScene.unity filter=lfs diff=lfs merge=lfs -text lockable
+# Scenes stay as mergeable Unity YAML. Large binary assets may use LFS separately.
+*.unity text eol=lf
 
 # Keep coordination and configuration documents reviewable as text.
 *.json text eol=lf

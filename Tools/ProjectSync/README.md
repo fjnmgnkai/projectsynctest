@@ -1,41 +1,39 @@
-# ProjectSync
+# ProjectSync（ローカル主体の試験版）
 
-ProjectSync is a Windows front end for the Git, Git LFS, GitHub, and Unity workflow defined by `VRChat_ProjectSync_全体運用仕様書_v1.1.docx`.
+各メンバーが自分のGitHubアカウントと自分のUnity Cloneを使い、同じRepositoryの短命Task Branchへ保存・提出するWindowsアプリです。常時稼働サーバー、GitHub Actions、GitHub App、ProjectSync独自の利用枠は使いません。管理者がPull Requestを確認して`main`へ統合します。
 
-## Implemented slice
+## 現在動く操作
 
-- CAS-based coordination aggregate with Device ID / Session ID / generation fencing
-- Concurrent Scene Task start claim so only one same-account device can become active
-- Cross-system partial-failure transition to `RecoveryRequired`
-- Durable operation checkpoint contract and atomic JSON journal
-- Four-stage save workflow: Unity save, local snapshot, push, remote reachability
-- Formal abort workflow: preserve, revoke, unlock, verify, complete
-- Submitted/Base/Candidate/conflict/generation validation identity
-- Fixed `BuildTargetSHA`, distinct Upload outcome, and `auto_merge=false` deployment contract
-- Git process policy rejecting reset, stash, clean, force push, and normal-path remote deletion
-- Task-only Git CLI adapter with full-SHA, non-force push and remote reachability verification
-- Start/save branch guards that reject `main` and mismatched Task branches before external effects
-- Unity 2022.3 Editor bridge for main-thread Scene and Asset save
-- WPF shell that remains safely disabled until trusted coordination and production gateways are connected
-- Self-contained failure/concurrency specification tests without external packages
+1. 「新しい作業」: Unityを閉じ、ローカル変更がない状態で最新のremote `main`を取得し、そこから新しい`task/...` Branchを作ります。作業中にmainを自動で取り込みません。
+2. 「作業を再開」: 指定したローカルTask Branchへ戻ります。Branch切替前はUnityを閉じ、ローカル変更をなくす必要があります。
+3. 「作業を保存」: Unityが開いていればScene/Assetを保存し、Task Branchへ対象ファイルだけをCommit/Pushし、remote到達を確認します。Push失敗時はローカルCommitと`UserSettings/ProjectSync/save-state.json`を残し、次回同じCommitのPushだけ再試行します。
+4. 「変更を提出」: GitHub CLIでPRを作り、PR本文にSubmitted Commit SHAを記録します。既存PRの本文やHEADが違う場合は停止し、勝手に古い提出を再利用しません。
 
-## Safety boundary
+通常操作で`main`へCommit/Push/Mergeしません。`reset --hard`、自動stash、force push、変更の自動破棄もしません。保存時にCommitするのは`Assets`、`Packages`、`ProjectSettings`、`.gitattributes`、`.gitignore`だけで、ルートの`Assets.zip`などは含めません。すでに別ファイルがGitにステージされていても、ProjectSyncのCommitは対象パスだけに限定します。
 
-The repository is connected to the private `fjnmgnkai/projectsynctest` GitHub repository, and the Main Scene LFS lock conflict was proven in an isolated PoC. The new Git adapter is exercised only against temporary local repositories; it is not wired to the desktop actions. Production Task start/save/submit, merge, build, upload, publish, and Deployment remain disabled pending trusted coordination, Unity and GitHub integration, and recovery verification.
+## 必要な準備
 
-GitHub Free cannot enforce Branch Protection or Rulesets on this private repository. The owner accepted a limited, trust-based pilot in which they manage merges; ProjectSync must never present that as satisfying the canonical GitHub-side Quality Gate. See `CodexTasks/projectsync-v1.1/PRIVATE_FREE_PILOT_EXCEPTION.md`. The repository will remain private.
+- Windows x64、Unity 2022.3系の対象Project Clone、Git、Git LFS、GitHub CLI (`gh`)
+- 各メンバーが自分のGitHubアカウントでGitのPushと`gh auth login`を設定し、Repositoryへの書き込み権限を持つこと
+- Unity Projectの`.gitignore`に`/UserSettings/`と、共有しないバックアップ（例: `/Assets.zip`）を設定すること
+- Unity Sceneを通常GitのYAMLとして管理すること。SceneをLFSにすると同じSceneの変更を通常のテキストマージで統合できません。
+- 100 MiB超の共有素材には、管理者が個別にGit LFS追跡を設定すること。未設定のまま保存しようとするとProjectSyncはCommit前に停止します。GitHub FreeのLFS単体ファイル上限2 GBも検査します。
 
-The desktop shell intentionally reports a safe-stop state while the trusted service and verification paths are absent. GitHub App private keys must never be placed in this project or distributed to clients.
+GitHub FreeのLFS無料枠はRepository所有者側でストレージ10 GiB・ダウンロード10 GiBです。追加料金を絶対に発生させない場合、所有者がGitHubのLFS予算を$0に設定してください。ProjectSyncはGitHubの請求設定を変更せず、無料枠の残量を完全には把握できません。[GitHub公式のLFS説明](https://docs.github.com/en/billing/concepts/product-billing/git-lfs)
 
-## Build and test
+## 現在の安全上の限界
+
+- このアプリはローカルTask運用の試験版です。PR作成の実GitHub終端間試験、Unity Editor Bridgeの実機保存試験、複数PC試験は未完了です。
+- Submitted SHAはPR本文に記録しますが、GitHub PRのHEADは後続Pushで変わり得ます。管理者は統合直前にHEADとSubmitted SHAを照合してください。既存PRへの再提出の自動更新はまだ実装していません。
+- Private + GitHub FreeではGitHub側の強制Branch Protection/Ruleset品質Gateは利用できません。アプリはmainを書きませんが、Repositoryの書き込み権限を持つ人の外部Git操作まで防げません。
+- 旧仕様のLFS Scene Lock/Session協調、管理者Candidate検証、Build/Upload/Publishはこのローカル主体経路に接続していません。完成済みとは扱いません。
+- 選択したProjectに既存の100 MiB超の通常Git履歴がある場合、追跡設定の追加だけでは過去のPush拒否を解消できません。履歴移行は自動では行いません。
+
+## 開発と検証
 
 ```powershell
 dotnet build .\src\ProjectSync.Desktop\ProjectSync.Desktop.csproj
 dotnet run --project .\tests\ProjectSync.SpecTests\ProjectSync.SpecTests.csproj
 ```
 
-The current machine has .NET 8 SDK. The production framework target must be reviewed before release because the design candidate was .NET 10 LTS; no SDK was installed automatically.
-
-## Portable Windows preview
-
-After committing source changes, run `packaging/New-PortablePackage.ps1` from PowerShell to produce a self-contained Windows x64 ZIP and SHA-256 file in `dist/`. The archive contains the desktop executable and Japanese usage/safety notes, not the Unity project or credentials. On another PC, extract it, launch the EXE, and select a Unity project folder. Task actions remain disabled until the trusted production gateways are completed.
+仕様テストは一時的なローカルGit remoteを使い、Task開始、main非変更、保存、Push失敗後の同一Commit再試行、バックアップ除外、大容量素材/Scene追跡の拒否を検査します。実Repositoryへの自動Push・PR作成はテストでは行いません。

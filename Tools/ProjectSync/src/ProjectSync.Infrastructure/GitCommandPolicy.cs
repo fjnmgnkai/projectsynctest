@@ -17,16 +17,24 @@ public static class GitCommandPolicy
         var allowed = command switch
         {
             "symbolic-ref" => Matches(arguments, "symbolic-ref", "--quiet", "--short", "HEAD"),
-            "status" => Matches(arguments, "status", "--porcelain=v1", "--untracked-files=all"),
+            "status" => Matches(arguments, "status", "--porcelain=v1", "--untracked-files=all") ||
+                        Matches(arguments, "status", "--porcelain=v1", "--untracked-files=all", "--", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore"),
             "rev-parse" => Matches(arguments, "rev-parse", "--verify", "HEAD") ||
                            Matches(arguments, "rev-parse", "--verify", "FETCH_HEAD"),
             "log" => Matches(arguments, "log", "-1", "--format=%B"),
-            "add" => Matches(arguments, "add", "-A"),
-            "commit" => arguments.Count == 5 &&
+            "add" => Matches(arguments, "add", "-A", "--", "Assets", "Packages", "ProjectSettings", ".gitattributes", ".gitignore"),
+            "commit" => arguments.Count == 12 &&
                         arguments[1] == "-m" &&
                         !string.IsNullOrWhiteSpace(arguments[2]) &&
                         arguments[3] == "-m" &&
-                        arguments[4] == $"ProjectSync-Operation-Id: {operationId.Value}",
+                        arguments[4] == $"ProjectSync-Operation-Id: {operationId.Value}" &&
+                        arguments[5] == "--only" &&
+                        arguments[6] == "--" &&
+                        arguments[7] == "Assets" &&
+                        arguments[8] == "Packages" &&
+                        arguments[9] == "ProjectSettings" &&
+                        arguments[10] == ".gitattributes" &&
+                        arguments[11] == ".gitignore",
             "push" => arguments.Count == 4 &&
                       arguments[1] == "--porcelain" &&
                       arguments[2] == "origin" &&
@@ -35,11 +43,26 @@ public static class GitCommandPolicy
                            arguments[1] == "--exit-code" &&
                            arguments[2] == "--heads" &&
                            arguments[3] == "origin" &&
-                           IsTaskRef(arguments[4], operationId),
+                           (IsTaskRef(arguments[4], operationId) ||
+                            arguments[4] == "refs/heads/main"),
             "fetch" => arguments.Count == 4 &&
                        arguments[1] == "--no-tags" &&
                        arguments[2] == "origin" &&
-                       IsTaskRef(arguments[3], operationId),
+                       (IsTaskRef(arguments[3], operationId) ||
+                        arguments[3] == "refs/heads/main"),
+            "remote" => Matches(arguments, "remote", "get-url", "origin"),
+            "switch" => (arguments.Count == 5 &&
+                         arguments[1] == "-c" &&
+                         TaskBranchPolicy.RequireTaskBranch(arguments[2], operationId, "git_policy").IsSuccess &&
+                         arguments[3] == "--no-track" &&
+                         arguments[4] == "FETCH_HEAD") ||
+                        (arguments.Count == 3 &&
+                         arguments[1] == "--no-guess" &&
+                         TaskBranchPolicy.RequireTaskBranch(arguments[2], operationId, "git_policy").IsSuccess),
+            "check-attr" => arguments.Count == 4 &&
+                            arguments[1] == "filter" &&
+                            arguments[2] == "--" &&
+                            IsManagedPath(arguments[3]),
             "merge-base" => arguments.Count == 4 &&
                             arguments[1] == "--is-ancestor" &&
                             IsFullSha(arguments[2]) &&
@@ -75,6 +98,15 @@ public static class GitCommandPolicy
             reference["refs/heads/".Length..],
             operationId,
             "git_policy").IsSuccess;
+
+    private static bool IsManagedPath(string path) =>
+        !string.IsNullOrWhiteSpace(path) &&
+        !path.Contains(':') &&
+        !path.Contains('\\') &&
+        path.Split('/').All(segment => segment.Length != 0 && segment != "." && segment != "..") &&
+        (path.StartsWith("Assets/", StringComparison.Ordinal) ||
+         path.StartsWith("Packages/", StringComparison.Ordinal) ||
+         path.StartsWith("ProjectSettings/", StringComparison.Ordinal));
 
     private static Outcome<Unit> Reject(string code, string message, OperationId operationId) =>
         Outcome<Unit>.Failure(Problem.Create(
