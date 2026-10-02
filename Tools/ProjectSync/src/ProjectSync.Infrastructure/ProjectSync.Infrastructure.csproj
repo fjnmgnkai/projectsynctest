@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\ProjectSync.Core\ProjectSync.Core.csproj" />
+    <InternalsVisibleTo Include="ProjectSync.SpecTests" />
   </ItemGroup>
 </Project>

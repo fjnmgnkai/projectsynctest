@@ -7,7 +7,7 @@
 1. 「新しい作業」: Unityを閉じ、ローカル変更がない状態で最新のremote `main`を取得し、そこから新しい`task/...` Branchを作ります。作業中にmainを自動で取り込みません。
 2. 「作業を再開」: 指定したローカルTask Branchへ戻ります。Branch切替前はUnityを閉じ、ローカル変更をなくす必要があります。
 3. 「作業を保存」: Unityが開いていればScene/Assetを保存し、Task Branchへ対象ファイルだけをCommit/Pushし、remote到達を確認します。Push失敗時はローカルCommitと`UserSettings/ProjectSync/save-state.json`を残し、次回同じCommitのPushだけ再試行します。
-4. 「変更を提出」: GitHub CLIでPRを作り、PR本文にSubmitted Commit SHAを記録します。既存PRの本文やHEADが違う場合は停止し、勝手に古い提出を再利用しません。
+4. 「変更を提出」: GitHub CLIでPRを作り、PR本文にSubmitted Commit SHAを記録します。保存後に同じボタンで再提出すると、ProjectSyncが作成した既存PRの本文にある提出SHAを新しいHEADへ更新します。PR本文やHEADに予期しない変更があれば停止します。
 
 通常操作で`main`へCommit/Push/Mergeしません。`reset --hard`、自動stash、force push、変更の自動破棄もしません。保存時にCommitするのは`Assets`、`Packages`、`ProjectSettings`、`.gitattributes`、`.gitignore`だけで、ルートの`Assets.zip`などは含めません。すでに別ファイルがGitにステージされていても、ProjectSyncのCommitは対象パスだけに限定します。
 
@@ -24,7 +24,7 @@ GitHub FreeのLFS無料枠はRepository所有者側でストレージ10 GiB・�
 ## 現在の安全上の限界
 
 - このアプリはローカルTask運用の試験版です。PR作成の実GitHub終端間試験、Unity Editor Bridgeの実機保存試験、複数PC試験は未完了です。
-- Submitted SHAはPR本文に記録しますが、GitHub PRのHEADは後続Pushで変わり得ます。管理者は統合直前にHEADとSubmitted SHAを照合してください。既存PRへの再提出の自動更新はまだ実装していません。
+- Submitted SHAはPR本文に記録しますが、GitHub PRのHEADは後続Pushで変わり得ます。管理者は統合直前にHEADとSubmitted SHAを照合してください。再提出後、旧SHAに対する確認・検証結果を流用してはいけません。PR本文の競合更新を完全に原子的に防ぐ仕組みはないため、アプリは更新前後に再読込し、結果が一致しなければ要確認として停止します。
 - Private + GitHub FreeではGitHub側の強制Branch Protection/Ruleset品質Gateは利用できません。アプリはmainを書きませんが、Repositoryの書き込み権限を持つ人の外部Git操作まで防げません。
 - 旧仕様のLFS Scene Lock/Session協調、管理者Candidate検証、Build/Upload/Publishはこのローカル主体経路に接続していません。完成済みとは扱いません。
 - 選択したProjectに既存の100 MiB超の通常Git履歴がある場合、追跡設定の追加だけでは過去のPush拒否を解消できません。履歴移行は自動では行いません。

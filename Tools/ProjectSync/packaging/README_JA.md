@@ -14,12 +14,12 @@ ZIPを展開し、`ProjectSync/ProjectSync.Desktop.exe`を起動してくださ�
 - 新しい作業: Unityを閉じ、ローカル変更がない状態で作業名を入力して押します。最新remote `main`から短命Task Branchを作ります。
 - 作業を再開: 再開したいローカルTask Branchを指定して押します。Branchを切り替える場合はUnityを閉じ、ローカル変更をなくしてください。
 - 作業を保存: Unityが開いていればScene/Assetを保存し、Task BranchへCommit・Pushして到達を確認します。通信失敗時はCommitを残すので、同じボタンで再試行します。
-- 変更を提出: 保存後に押すとPRを作り、本文にSubmitted Commit SHAを記録します。管理者はそのSHAとPR HEADを確認してから統合してください。
+- 変更を提出: 保存後に押すとPRを作り、本文にSubmitted Commit SHAを記録します。同じTaskで後から保存した場合は再度押して新SHAを再提出します。管理者はそのSHAとPR HEADを確認してから統合してください。
 
 ProjectSyncは`main`へCommit/Push/Mergeしません。ルートの`Assets.zip`はProjectSyncのCommit対象にしません。GitHub Actionsと常時稼働サーバーは使いません。
 
 ## 試験版としての限界
 
-実GitHub PR作成、Unity Editor経由の保存、複数PCでの終端間試験はまだ完了していません。Private + GitHub FreeではGitHub側の強制品質Gateを作れないため、管理者による確認が必要です。既存PRのSubmitted SHAとHEADが変わった場合、自動再提出せず停止します。Build/Upload/Publishも未接続です。本番確認済みと誤認しないでください。
+実GitHub PR作成・再提出、Unity Editor経由の保存、複数PCでの終端間試験はまだ完了していません。Private + GitHub FreeではGitHub側の強制品質Gateを作れないため、管理者による確認が必要です。再提出はProjectSyncが作成した形式のPRだけに許可し、更新前後にPRを読み直します。競合更新は完全には防げません。Build/Upload/Publishも未接続です。本番確認済みと誤認しないでください。
 
 ZIPのSHA-256を隣の`.sha256`ファイルと照合し、`BUILD-INFO.txt`でソースCommitを確認してください。

@@ -22,6 +22,7 @@ internal static class Program
         ("save branch binding survives journal reload", SaveBranchBindingSurvivesReloadAsync),
         ("real Git Task snapshot and push leave main unchanged", GitCliTaskGatewayKeepsMainReadOnlyAsync),
         ("local-first Task save retries the same commit after remote failure", LocalFirstSaveRecoversAsync),
+        ("PR resubmission replaces only the recorded SHA and refuses foreign bodies", SubmissionBodyRebindIsStrictAsync),
         ("large ordinary assets and LFS Scenes are rejected before commit", AssetPolicyRejectsUnsafeTrackingAsync),
         ("operation journal survives process-memory loss", FileJournalPersistsAsync)
     ];
@@ -465,6 +466,35 @@ internal static class Program
         {
             DeleteLocalFixture(directory);
         }
+    }
+
+    private static Task SubmissionBodyRebindIsStrictAsync()
+    {
+        const string oldSha = "1111111111111111111111111111111111111111";
+        const string newSha = "2222222222222222222222222222222222222222";
+        var body = $"<!-- ProjectSync-Submitted-SHA: {oldSha} -->\n\n提出Commit: `{oldSha}`\n管理者向けメモ\n";
+
+        True(LocalTaskWorkspace.TryUpdateSubmissionBody(body, newSha, out var updated),
+            "A ProjectSync-owned PR body should allow an explicit new submitted SHA.");
+        True(updated.Contains($"<!-- ProjectSync-Submitted-SHA: {newSha} -->", StringComparison.Ordinal),
+            "The machine-readable marker must change.");
+        True(updated.Contains($"提出Commit: `{newSha}`", StringComparison.Ordinal),
+            "The human-visible submitted SHA must change too.");
+        True(updated.Contains("管理者向けメモ", StringComparison.Ordinal),
+            "Unrelated PR text must be preserved.");
+        False(updated.Contains(oldSha, StringComparison.Ordinal), "The old submitted SHA must not remain as the current value.");
+
+        True(LocalTaskWorkspace.TryUpdateSubmissionBody(updated, newSha, out var retry),
+            "Retrying the same submission should be accepted.");
+        Equal(updated, retry, "Retry must not rewrite the PR body again.");
+        False(LocalTaskWorkspace.TryUpdateSubmissionBody("管理者のPR本文", newSha, out _),
+            "A PR not created by ProjectSync must not be silently adopted.");
+        False(LocalTaskWorkspace.TryUpdateSubmissionBody(body + body, newSha, out _),
+            "Duplicate submission markers must be rejected.");
+        False(LocalTaskWorkspace.TryUpdateSubmissionBody(
+                $"<!-- ProjectSync-Submitted-SHA: invalid -->\n提出Commit: `{oldSha}`", newSha, out _),
+            "Malformed submission markers must be rejected.");
+        return Task.CompletedTask;
     }
 
     private static async Task AssetPolicyRejectsUnsafeTrackingAsync()

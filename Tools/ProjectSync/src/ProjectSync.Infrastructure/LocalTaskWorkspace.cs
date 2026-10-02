@@ -411,7 +411,6 @@ public sealed class LocalTaskWorkspace
 
         if (matching.Length != 1 ||
             !string.Equals(matching[0].HeadRefOid, sha, StringComparison.OrdinalIgnoreCase) ||
-            matching[0].Body?.Contains(SubmittedPrefix + sha + " -->", StringComparison.Ordinal) != true ||
             !Uri.TryCreate(matching[0].Url, UriKind.Absolute, out var pullRequestUri) ||
             pullRequestUri.Scheme != Uri.UriSchemeHttps ||
             !string.Equals(pullRequestUri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
@@ -421,7 +420,96 @@ public sealed class LocalTaskWorkspace
                 operationId, "submit", "PRのHEADまたは提出SHAが一致しません。既存PRを確認してください。");
         }
 
+        if (!TryUpdateSubmissionBody(matching[0].Body, sha, out var updatedBody))
+        {
+            return Failure<LocalSubmissionResult>("submission_marker_invalid", ProblemCategory.RecoveryRequired,
+                operationId, "submit", "既存PRの提出SHA表示が不正です。PR本文を確認してください。");
+        }
+
+        if (!string.Equals(matching[0].Body, updatedBody, StringComparison.Ordinal))
+        {
+            // Re-read immediately before editing so an observed concurrent change cannot be overwritten.
+            var fresh = await ListPullRequestsAsync(repository, branch, operationId, cancellationToken)
+                .ConfigureAwait(false);
+            if (!fresh.IsSuccess)
+            {
+                return Outcome<LocalSubmissionResult>.Failure(fresh.Problem!);
+            }
+
+            if (fresh.Value!.Length != 1 ||
+                !string.Equals(fresh.Value[0].Url, matching[0].Url, StringComparison.Ordinal) ||
+                !string.Equals(fresh.Value[0].HeadRefOid, sha, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(fresh.Value[0].Body, matching[0].Body, StringComparison.Ordinal))
+            {
+                return Failure<LocalSubmissionResult>("pr_changed_during_submission", ProblemCategory.Conflict,
+                    operationId, "submit", "提出中にPRが変更されました。内容を確認してから再試行してください。");
+            }
+
+            // A lost gh response is inconclusive. The final read below decides whether this SHA was recorded.
+            _ = await RunGithubAsync(
+                ["pr", "edit", matching[0].Url!, "--repo", repository, "--body", updatedBody],
+                operationId, "resubmit_pr", cancellationToken).ConfigureAwait(false);
+            var afterEdit = await ListPullRequestsAsync(repository, branch, operationId, cancellationToken)
+                .ConfigureAwait(false);
+            if (!afterEdit.IsSuccess)
+            {
+                return Outcome<LocalSubmissionResult>.Failure(afterEdit.Problem!);
+            }
+
+            if (afterEdit.Value!.Length != 1 ||
+                !string.Equals(afterEdit.Value[0].Url, matching[0].Url, StringComparison.Ordinal) ||
+                !string.Equals(afterEdit.Value[0].HeadRefOid, sha, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(afterEdit.Value[0].Body, updatedBody, StringComparison.Ordinal))
+            {
+                return Failure<LocalSubmissionResult>("resubmission_unconfirmed", ProblemCategory.RecoveryRequired,
+                    operationId, "submit", "再提出の結果を確認できません。PR本文とHEADを確認してください。");
+            }
+        }
+
         return Outcome<LocalSubmissionResult>.Success(new LocalSubmissionResult(matching[0].Url!, sha));
+    }
+
+    internal static bool TryUpdateSubmissionBody(string? body, string sha, out string updatedBody)
+    {
+        updatedBody = string.Empty;
+        if (body is null || !GitCommandPolicy.IsFullSha(sha))
+        {
+            return false;
+        }
+
+        var markerAt = body.IndexOf(SubmittedPrefix, StringComparison.Ordinal);
+        if (markerAt < 0 ||
+            body.IndexOf(SubmittedPrefix, markerAt + SubmittedPrefix.Length, StringComparison.Ordinal) >= 0)
+        {
+            return false;
+        }
+
+        var shaAt = markerAt + SubmittedPrefix.Length;
+        var markerEnd = body.IndexOf(" -->", shaAt, StringComparison.Ordinal);
+        if (markerEnd < 0)
+        {
+            return false;
+        }
+
+        var oldSha = body[shaAt..markerEnd];
+        if (!GitCommandPolicy.IsFullSha(oldSha))
+        {
+            return false;
+        }
+
+        var oldDisplay = $"提出Commit: `{oldSha}`";
+        var displayAt = body.IndexOf(oldDisplay, markerEnd + 4, StringComparison.Ordinal);
+        if (displayAt < 0 ||
+            body.IndexOf(oldDisplay, displayAt + oldDisplay.Length, StringComparison.Ordinal) >= 0)
+        {
+            return false;
+        }
+
+        var newMarker = SubmittedPrefix + sha + " -->";
+        var oldMarker = SubmittedPrefix + oldSha + " -->";
+        updatedBody = body.Replace(oldMarker, newMarker, StringComparison.Ordinal)
+            .Replace(oldDisplay, $"提出Commit: `{sha}`", StringComparison.Ordinal);
+        return true;
     }
 
     private async Task<Outcome<PullRequestView[]>> ListPullRequestsAsync(
