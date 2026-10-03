@@ -1,0 +1,2 @@
+ProjectSync live smoke test, 2026-10-03 JST.
+This file verifies that the production save handler commits and pushes only to its Task branch.
